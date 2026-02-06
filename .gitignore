@@ -1,0 +1,5 @@
+token.txt
+memory.db
+__pycache__/
+.env
+.venv/
