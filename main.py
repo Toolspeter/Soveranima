@@ -234,7 +234,7 @@ class ForgetView(ui.View):
 # ==================== 輔助函數 ====================
 
 async def send_long_message(channel, content: str, max_length: int = 2000):
-    """分段發送超過 Discord 限制的訊息"""
+    """分段發送超過 Discord 限制的訊息，並確保 Markdown 代碼塊不崩潰"""
     if len(content) <= max_length:
         await channel.send(content)
         return
@@ -245,17 +245,24 @@ async def send_long_message(channel, content: str, max_length: int = 2000):
             chunks.append(content)
             break
 
-        split_pos = content.rfind('\n', 0, max_length)
+        # 尋找分割點，優先找換行
+        split_pos = content.rfind('\n', 0, max_length - 50)
         if split_pos == -1 or split_pos < max_length // 2:
-            split_pos = content.rfind(' ', 0, max_length)
-        if split_pos == -1 or split_pos < max_length // 2:
-            split_pos = max_length
+            split_pos = max_length - 50
 
-        chunks.append(content[:split_pos])
-        content = content[split_pos:].lstrip()
+        chunk = content[:split_pos]
+        
+        # 處理代碼塊閉合邏輯 (SSP 強化版)
+        if chunk.count("```") % 2 != 0:
+            chunk += "\n```"
+            content = "```python\n" + content[split_pos:].lstrip()
+        else:
+            content = content[split_pos:].lstrip()
+
+        chunks.append(chunk)
 
     for chunk in chunks:
-        if chunk:
+        if chunk.strip():
             await channel.send(chunk)
 
 
