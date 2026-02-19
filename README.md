@@ -2,7 +2,7 @@
 
 > [!Warning]
 > **警告:**
-> `Soveranima`會自動演化及自動使用 **skills** 如果您使用了含有惡意功能的 **skill** 或是 **Prompt** 所產生違法行爲自行負責
+> `Soveranima`會自動演化及自動使用 **skills** 如果您使用了含有惡意功能的 **skill** 或是 **Prompt** 所產生的違法行爲請自行負責
 > **Soveranima可能會出錯**
 
 ## Soveranima 簡介
@@ -18,6 +18,7 @@ pip install -r requirements.txt
 pm2 start main.py --name Soveranima --interpreter python3
 ```
 
+> [!Note]
 > Discord Developer Portal 中需開啟 **Message Content Intent**
 
 ## 核心功能
@@ -63,39 +64,32 @@ SSP 是 Soveranima 的技能插件協議。開發者只需在 `skills/` 目錄�
 
 ### 架構總覽
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    使用者訊息                             │
-└──────────────────────┬──────────────────────────────────┘
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Soul (brain.py)                        │
-│                                                         │
-│  1. 將可用技能清單注入 LLM 系統提示                        │
-│  2. LLM 回傳 skill_action → 解析 capability + params     │
-│  3. 呼叫 call_skill(capability, **params)                │
-└──────────────────────┬──────────────────────────────────┘
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│              SkillRegistry (Singleton)                   │
-│              skills/registry.py                         │
-│                                                         │
-│  ┌───────────────────────────────────────────────┐      │
-│  │ execute(capability, **kwargs)                 │      │
-│  │                                               │      │
-│  │  1. 收集所有宣告該 capability 的技能           │      │
-│  │  2. 按 priority 降序排列（高優先）             │      │
-│  │  3. 依序嘗試執行，成功即回傳                   │      │
-│  │  4. 回傳 None → 自動 fallback 到下一個技能     │      │
-│  └───────────────────────────────────────────────┘      │
-│                       │                                  │
-│         ┌─────────────┼─────────────┐                    │
-│         ▼             ▼             ▼                    │
-│  ┌───────────┐ ┌───────────┐ ┌───────────┐              │
-│  │  Skill A  │ │  Skill B  │ │  Skill C  │   ...        │
-│  │ pri: 10   │ │ pri: 5    │ │ pri: 0    │              │
-│  └───────────┘ └───────────┘ └───────────┘              │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["使用者訊息"] --> B
+
+    subgraph B["Soul (brain.py)"]
+        B1["1. 將可用技能清單注入 LLM 系統提示"]
+        B2["2. LLM 回傳 skill_action → 解析 capability + params"]
+        B3["3. 呼叫 call_skill(capability, **params)"]
+    end
+
+    B --> C
+
+    subgraph C["SkillRegistry (Singleton) — skills/registry.py"]
+        direction TB
+        E["execute(capability, **kwargs)"]
+        E1["1. 收集所有宣告該 capability 的技能"]
+        E2["2. 按 priority 降序排列（高優先）"]
+        E3["3. 依序嘗試執行，成功即回傳"]
+        E4["4. 回傳 None → 自動 fallback 到下一個技能"]
+        E --> E1 --> E2 --> E3 --> E4
+
+        E4 --> SA["Skill A\npri: 10"]
+        E4 --> SB["Skill B\npri: 5"]
+        E4 --> SC["Skill C\npri: 0"]
+        E4 --> SD["..."]
+    end
 ```
 
 ---
@@ -104,14 +98,12 @@ SSP 是 Soveranima 的技能插件協議。開發者只需在 `skills/` 目錄�
 
 當 Registry 需要在技能模組中找到對應 capability 的函式時，依以下順序查找：
 
-```
-1. capability_map 映射   →  SKILL_MANIFEST["capability_map"]["web_search"] = "search"
-                              ↓ 找不到
-2. 與 capability 同名函式 →  def web_search(...)
-                              ↓ 找不到
-3. 通用 execute 入口      →  def execute(...)
-                              ↓ 找不到
-4. 自動掃描模組中第一個非內建 callable
+```mermaid
+flowchart TD
+    A["1. capability_map 映射\nSKILL_MANIFEST['capability_map']['web_search'] = 'search'"]
+    A -- "找不到" --> B["2. 與 capability 同名函式\ndef web_search(...)"]
+    B -- "找不到" --> C["3. 通用 execute 入口\ndef execute(...)"]
+    C -- "找不到" --> D["4. 自動掃描模組中第一個非內建 callable"]
 ```
 
 ---
@@ -238,42 +230,23 @@ def translate_text(query, target_lang="ZH", **kwargs):
 
 ### 技能生命週期
 
-```
-啟動 / 重載
-    │
-    ▼
-SkillRegistry.reload_skills()
-    │
-    ├── 掃描 skills/ 目錄下所有 .py 檔案
-    │   （排除 __init__.py 和 registry.py）
-    │
-    ├── 動態 import 模組
-    │
-    ├── 檢查是否有 SKILL_MANIFEST
-    │
-    ├── 驗證必要欄位（id, name, version, capabilities）
-    │
-    └── 註冊到 self.skills[id]
-         │
-         ▼
-    使用者發送訊息
-         │
-         ▼
-    LLM 判斷需要使用技能 → 輸出 skill_action
-         │
-         ▼
-    Soul.call_skill(capability, **params)
-         │
-         ▼
-    SkillRegistry.execute(capability)
-         │
-         ├── 收集所有符合的技能
-         ├── 按 priority 排序
-         ├── 依序嘗試 → _find_func() → _safe_call()
-         └── 回傳第一個非 None 結果
-              │
-              ▼
-         結果注入對話 → LLM 生成最終回覆
+```mermaid
+flowchart TD
+    A["啟動 / 重載"] --> B["SkillRegistry.reload_skills()"]
+    B --> B1["掃描 skills/ 目錄下所有 .py 檔案\n（排除 __init__.py 和 registry.py）"]
+    B1 --> B2["動態 import 模組"]
+    B2 --> B3["檢查是否有 SKILL_MANIFEST"]
+    B3 --> B4["驗證必要欄位\n（id, name, version, capabilities）"]
+    B4 --> B5["註冊到 self.skills[id]"]
+    B5 --> C["使用者發送訊息"]
+    C --> D["LLM 判斷需要使用技能 → 輸出 skill_action"]
+    D --> E["Soul.call_skill(capability, **params)"]
+    E --> F["SkillRegistry.execute(capability)"]
+    F --> F1["收集所有符合的技能"]
+    F1 --> F2["按 priority 排序"]
+    F2 --> F3["依序嘗試 → _find_func() → _safe_call()"]
+    F3 --> F4["回傳第一個非 None 結果"]
+    F4 --> G["結果注入對話 → LLM 生成最終回覆"]
 ```
 
 ---
