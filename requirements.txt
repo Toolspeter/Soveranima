@@ -2,3 +2,5 @@ discord
 openai
 python-dotenv
 certifi
+dotenv
+tavily-python
