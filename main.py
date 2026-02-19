@@ -321,8 +321,8 @@ async def cmd_help(interaction: discord.Interaction):
 `/status` - 查看機器人狀態與記憶統計
 `/forget` - 清除對話記憶
 `/config` - 開啟設定選單
-`/todo` - 查看待審核的升級請求
-`/detail` - 查看升級請求詳情
+`/todo` - 查看待審核的升級請求（僅限 OWNER）
+`/detail` - 查看升級請求詳情（僅限 OWNER）
 `/approve` - 批准升級請求（僅限 OWNER）
 `/reject` - 拒絕升級請求（僅限 OWNER）
 `/help` - 顯示此說明
@@ -366,7 +366,7 @@ async def cmd_config(interaction: discord.Interaction):
     await interaction.response.send_message("**設定選單**\n請選擇要調整的項目：", view=ConfigView(user_id), ephemeral=True)
 
 
-@client.tree.command(name="todo", description="查看待審核的升級請求")
+@client.tree.command(name="todo", description="查看待審核的升級請求（僅限 OWNER）")
 async def cmd_todo(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     if not client.soul.is_owner(user_id):
@@ -386,7 +386,7 @@ async def cmd_todo(interaction: discord.Interaction):
         await interaction.response.send_message(text)
 
 
-@client.tree.command(name="detail", description="查看升級請求詳情")
+@client.tree.command(name="detail", description="查看升級請求詳情（僅限 OWNER）")
 @app_commands.describe(id="升級請求的 ID")
 async def cmd_detail(interaction: discord.Interaction, id: int):
     user_id = str(interaction.user.id)

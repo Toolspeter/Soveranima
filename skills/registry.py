@@ -22,6 +22,7 @@ class SkillRegistry:
     def __init__(self):
         self.skills = {}
         self.skills_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
+        self._last_snapshot = {}
         self.reload_skills()
 
     @classmethod
@@ -30,10 +31,39 @@ class SkillRegistry:
             cls._instance = cls()
         return cls._instance
 
+    def _get_dir_snapshot(self):
+        """取得 skills/ 目錄下所有 .py 檔案的 mtime 快照"""
+        snapshot = {}
+        if not os.path.exists(self.skills_dir):
+            return snapshot
+        for filename in os.listdir(self.skills_dir):
+            if filename.endswith(".py") and not filename.startswith("__") and filename != "registry.py":
+                filepath = os.path.join(self.skills_dir, filename)
+                try:
+                    snapshot[filename] = os.path.getmtime(filepath)
+                except OSError:
+                    pass
+        return snapshot
+
+    def _check_and_reload(self):
+        """比對檔案快照，有變化時自動重載（熱插拔）"""
+        current = self._get_dir_snapshot()
+        if current != self._last_snapshot:
+            added = set(current) - set(self._last_snapshot)
+            removed = set(self._last_snapshot) - set(current)
+            modified = {f for f in set(current) & set(self._last_snapshot) if current[f] != self._last_snapshot[f]}
+            changes = []
+            if added: changes.append(f"新增: {', '.join(added)}")
+            if removed: changes.append(f"移除: {', '.join(removed)}")
+            if modified: changes.append(f"更新: {', '.join(modified)}")
+            print(f"🔌 [SSP 熱插拔] 偵測到技能變化 — {'; '.join(changes)}，重新載入中...")
+            self.reload_skills()
+
     def reload_skills(self):
         """掃描目錄並加載所有具備有效 Manifest 的技能"""
         self.skills = {}
         if not os.path.exists(self.skills_dir):
+            self._last_snapshot = {}
             return
 
         for filename in os.listdir(self.skills_dir):
@@ -44,7 +74,7 @@ class SkillRegistry:
                     spec = importlib.util.spec_from_file_location(module_name, file_path)
                     module = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(module)
-                    
+
                     if hasattr(module, "SKILL_MANIFEST"):
                         manifest = module.SKILL_MANIFEST
                         if self._validate_manifest(manifest, filename):
@@ -55,6 +85,11 @@ class SkillRegistry:
                             }
                 except Exception as e:
                     print(f"⚠️ 加載技能 {filename} 失敗: {e}")
+
+        self._last_snapshot = self._get_dir_snapshot()
+        loaded = [info["manifest"].get("name", sid) for sid, info in self.skills.items()]
+        if loaded:
+            print(f"✅ [SSP] 已載入 {len(loaded)} 個技能: {', '.join(loaded)}")
 
     def _validate_manifest(self, manifest: dict, filename: str) -> bool:
         """嚴格校驗 Manifest 格式與必要欄位"""
@@ -84,6 +119,7 @@ class SkillRegistry:
             return False
 
     def get_all_manifests(self):
+        self._check_and_reload()
         return [info["manifest"] for info in self.skills.values()]
 
     def _safe_call(self, func, **kwargs):
@@ -124,6 +160,7 @@ class SkillRegistry:
 
     def execute(self, capability, **kwargs):
         """根據能力名稱路由並執行對應技能，按 priority 排序，失敗自動嘗試下一個"""
+        self._check_and_reload()
         # 收集所有支援此 capability 的技能，按 priority 降序排列
         candidates = []
         for skill_id, info in self.skills.items():

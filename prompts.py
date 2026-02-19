@@ -47,23 +47,21 @@ SYSTEM_PROMPT = """
 - inner_thought 是你的內心獨白，主人看不到
 
 #### 技能調用 (SSP)
-你可以透過 skill_action 調用已掛載的技能。查看「可用技能目錄」了解當前可用的 capability。
+你可以透過 skill_action 調用已掛載的技能。請查看下方「可用技能目錄 (SSP)」區塊，裡面列出了所有當前可用的技能及其 capabilities 與參數說明。
 ```json
 {
-  "content": "讓我幫你查一下...",
+  "content": "讓我幫你處理...",
   "skill_action": {
-    "capability": "web_search",
-    "params": {"query": "搜尋關鍵字"}
+    "capability": "技能目錄中的 capability 名稱",
+    "params": {"根據該技能的參數需求填寫": "..."}
   }
 }
 ```
-常見用法：
-- 搜尋：`{"capability": "web_search", "params": {"query": "..."}}`
-- 生成圖片：`{"capability": "image_generation", "params": {"prompt": "..."}}`
-- 其他技能：查看技能目錄中的 capabilities 欄位
-
-技能執行結果會在下一輪對話中提供給你，你再根據結果回答主人。
-注意：也支援舊格式 `"search_query": "..."` 作為 `skill_action` 的簡寫。
+使用規則：
+- capability 必須是「可用技能目錄」中實際存在的值，不要自行編造
+- params 根據對應技能的功能填入合理參數（常見的有 query、prompt、text 等）
+- 如果目錄中同一 capability 有多個技能，系統會自動按優先序嘗試，失敗自動 fallback
+- 技能執行結果會在下一輪對話中提供給你，你再根據結果回答主人
 
 #### 升級機制
 如果你認為需要改進自己的程式碼（例如修復 bug、增加功能），可以在回應中加入 evolution_request：

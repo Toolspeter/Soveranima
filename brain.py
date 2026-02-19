@@ -301,23 +301,12 @@ class Soul:
         return result
 
     def _get_skills_manifests(self) -> list:
-        """掃描 skills/ 目錄並提取所有技能的 Manifest 資訊"""
-        manifests = []
-        import importlib.util
-        skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
-        if os.path.exists(skills_dir):
-            for filename in os.listdir(skills_dir):
-                if filename.endswith(".py") and not filename.startswith("__"):
-                    try:
-                        module_name = filename[:-3]
-                        spec = importlib.util.spec_from_file_location(module_name, os.path.join(skills_dir, filename))
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
-                        if hasattr(module, "SKILL_MANIFEST"):
-                            manifests.append(module.SKILL_MANIFEST)
-                    except Exception:
-                        pass
-        return manifests
+        """透過 SkillRegistry 取得所有技能的 Manifest（自動熱插拔偵測）"""
+        try:
+            from skills.registry import SkillRegistry
+            return SkillRegistry.get_instance().get_all_manifests()
+        except Exception:
+            return []
 
     def _get_source_code(self) -> str:
         """取得所有可演化檔案（含核心檔案與 skills/ 目錄）的程式碼"""
