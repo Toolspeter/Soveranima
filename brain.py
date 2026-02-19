@@ -2,16 +2,9 @@ import json
 import os
 import sqlite3
 import subprocess
-import ast
 from datetime import datetime
 from openai import OpenAI
 from prompts import SYSTEM_PROMPT, HEARTBEAT_PROMPT
-
-try:
-    from tavily import TavilyClient
-    TAVILY_AVAILABLE = True
-except ImportError:
-    TAVILY_AVAILABLE = False
 
 # 核心系統檔案清單（prompts.py 已被永久移除以確保安全）
 EVOLVABLE_FILES = ["brain.py", "main.py"]
@@ -40,11 +33,6 @@ class Soul:
         self.model = model
         self.db = sqlite3.connect("memory.db", check_same_thread=False)
         self._init_db()
-
-        # Tavily 搜尋客戶端
-        self.tavily = None
-        if TAVILY_AVAILABLE and tavily_api_key:
-            self.tavily = TavilyClient(api_key=tavily_api_key)
 
     def _init_db(self):
         cur = self.db.cursor()
@@ -198,49 +186,106 @@ class Soul:
             return None
 
     def search_web(self, query: str, max_results: int = 3) -> str:
-        """優先使用通用技能接口進行搜尋。針對天氣查詢，自動附加「當地官方氣象機構」關鍵字以確保準確性。"""
-        processed_query = query
-        # 偵測天氣相關關鍵字
-        weather_keywords = ["天氣", "氣溫", "weather", "temperature", "預報", "forecast"]
-        if any(k in query.lower() for k in weather_keywords):
-            # 根據關鍵字判斷地區，預設附加「官方氣象局」以過濾非官方資訊
-            if "中央氣象署" not in query and "CWA" not in query.upper():
-                # 這裡未來可擴充地理位置偵測邏輯
-                if any(loc in query for loc in ["台灣", "台北", "土城", "新北", "Taiwan"]):
-                    processed_query = f"{query} 中央氣象署 CWA"
-                elif any(loc in query for loc in ["日本", "東京", "大阪", "Japan", "Tokyo"]):
-                    processed_query = f"{query} 日本氣象廳 JMA"
-                else:
-                    processed_query = f"{query} official local meteorological authority"
-        
-        result = self.call_skill("web_search", query=processed_query, max_results=max_results)
+        """純粹透過 SSP 技能路由搜尋，Registry 自動按 priority 排序並 fallback"""
+        result = self.call_skill("web_search", query=query, max_results=max_results)
         if result:
+            print(f"🔍 [搜尋] 成功")
+            return result
+        print(f"🔍 [搜尋] 所有 web_search 技能均無結果")
+        return ""
+
+    def _normalize_skill_action(self, result: dict) -> dict:
+        """向後相容：將舊格式 search_query / image_prompt 轉換為統一的 skill_action"""
+        if result.get('skill_action'):
+            return result
+        if result.get('search_query'):
+            result['skill_action'] = {"capability": "web_search", "params": {"query": result['search_query']}}
+        elif result.get('image_prompt'):
+            result['skill_action'] = {"capability": "image_generation", "params": {"prompt": result['image_prompt']}}
+        return result
+
+    def _execute_skill_action(self, result: dict, messages: list, raw: str, settings: dict, user_id: str, followup_instruction: str = "請根據結果給予主人最終回覆。", max_rounds: int = 3) -> dict:
+        """統一處理 skill_action：執行技能 → 多輪思考 → 合併結果
+
+        如果 defer=True（預設），第一輪有 skill_action 時不立即執行，
+        而是在 result 中標記 _pending_skill，讓呼叫端先發送中間訊息。
+        呼叫端之後再呼叫 continue_skill() 來完成技能執行與後續思考。
+        """
+        result = self._normalize_skill_action(result)
+        action = result.get('skill_action')
+        if not action:
             return result
 
-        # Fallback: 原有的 Tavily 邏輯
-        if not self.tavily:
-            return ""
+        # 標記待執行的技能，讓 main.py 可以先發送中間訊息
+        result['_pending_skill'] = {
+            'messages': messages,
+            'raw': raw,
+            'settings': settings,
+            'user_id': user_id,
+            'followup_instruction': followup_instruction,
+            'max_rounds': max_rounds,
+            'first_result': dict(result),
+        }
+        return result
 
-        try:
-            response = self.tavily.search(
-                query=query,
-                search_depth="advanced",
-                max_results=max_results,
-                include_answer=True,
-                search_days=7
+    def continue_skill(self, result: dict) -> dict:
+        """繼續執行被延遲的技能調用（由 main.py 在發送中間訊息後呼叫）"""
+        pending = result.pop('_pending_skill', None)
+        if not pending:
+            return result
+
+        messages = pending['messages']
+        current_raw = pending['raw']
+        settings = pending['settings']
+        user_id = pending['user_id']
+        followup_instruction = pending['followup_instruction']
+        max_rounds = pending['max_rounds']
+        first_result = pending['first_result']
+
+        for round_num in range(1, max_rounds + 1):
+            result = self._normalize_skill_action(result)
+            action = result.get('skill_action')
+            if not action:
+                break
+
+            capability = action.get('capability', '')
+            params = action.get('params', {})
+            print(f"⚡ [SSP] 第{round_num}輪 執行技能: {capability} params={list(params.keys())}")
+
+            # 執行技能
+            skill_result = self.call_skill(capability, **params)
+            if not skill_result and 'search' in capability.lower():
+                skill_result = self.search_web(params.get('query', ''))
+
+            # 注入結果（成功或失敗）到對話，進行下一輪思考
+            messages.append({"role": "assistant", "content": current_raw})
+            if skill_result:
+                print(f"⚡ [SSP] {capability} 執行成功")
+                self._save_message(user_id, "system", f"[技能結果: {capability}]\n{skill_result}")
+                messages.append({"role": "user", "content": f"[系統通知] 技能 {capability} 執行完成：\n{skill_result}\n{followup_instruction}"})
+            else:
+                print(f"⚡ [SSP] {capability} 無結果，通知 LLM 重新回覆")
+                messages.append({"role": "user", "content": f"[系統通知] 技能 {capability} 執行失敗，沒有取得任何結果。請直接回覆主人，不要說「等等」或「稍後回覆」之類的話，因為你無法再次嘗試。如果你有其他方式可以幫助主人，請直接提供。"})
+
+            next_response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=settings["temperature"]
             )
-            results = []
-            if response.get("answer"):
-                results.append(f"摘要：{response['answer']}")
+            current_raw = next_response.choices[0].message.content
+            result = self._parse_response(current_raw)
 
-            for r in response.get("results", [])[:max_results]:
-                source_url = r.get('url', '未知來源')
-                results.append(f"• {r.get('title', '')}: {r.get('content', '')[:200]}...\n  (來源: {source_url})")
+            # 如果這輪沒有新的 skill_action，結束迴圈
+            result = self._normalize_skill_action(result)
+            if not result.get('skill_action'):
+                break
 
-            return "\n".join(results) if results else ""
-        except Exception as e:
-            print(f"Tavily 搜尋錯誤: {e}")
-            return ""
+        # 合併元數據
+        merge_exclude = {'content', 'inner_thought', 'decision', 'search_query', 'image_prompt', 'skill_action', '_pending_skill'}
+        for key, value in first_result.items():
+            if key not in merge_exclude and key not in result:
+                result[key] = value
+        return result
 
     def _get_skills_manifests(self) -> list:
         """掃描 skills/ 目錄並提取所有技能的 Manifest 資訊"""
@@ -426,7 +471,7 @@ class Soul:
         else:
             return {"success": False, "message": "無效的清除類型"}
 
-    def think(self, user_id: str, user_input: str, image_url: str = None) -> dict:
+    def think(self, user_id: str, user_input: str, image_url: str = None, vision_context: str = "") -> dict:
         # 安全性檢查：限制輸入長度並過濾異常字元
         sanitized_input = user_input.strip()[:2000]
         # 先取得歷史紀錄，再儲存當前訊息，避免在 Prompt 中重複出現最新訊息導致 AI 誤判
@@ -490,6 +535,10 @@ class Soul:
             # 如果有圖片但沒文字，補上預設說明以符合部分模型對非空文字的要求
             if not user_content:
                 user_content.append({"type": "text", "text": "(分享了一張圖片)"})
+            # 注入圖片來源標註與誠實指令，防止視覺幻覺
+            vision_instruction = f"[視覺感知] 偵測到圖片 {vision_context}" if vision_context else "[視覺感知] 偵測到圖片"
+            vision_instruction += "\n[重要] 如果你無法實際看到或解析這張圖片的內容，請誠實告訴主人你看不到，絕對不要根據上下文猜測圖片內容。"
+            user_content.append({"type": "text", "text": vision_instruction})
             user_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
         # 確保 content 不為空，若真的完全沒內容則填入原始輸入或預設值
@@ -507,37 +556,9 @@ class Soul:
         raw = response.choices[0].message.content
         result = self._parse_response(raw)
 
-        # 處理搜尋請求
-        if result.get('search_query') and self.tavily:
-            search_results = self.search_web(result['search_query'])
-            if search_results:
-                self._save_message(user_id, "system", f"[搜尋結果: {result['search_query']}]\n{search_results}")
-                
-                # 準備二次思考，將原始 JSON 回覆傳回給模型以保持上下文連貫
-                messages.append({"role": "assistant", "content": raw})
-                messages.append({"role": "user", "content": f"[系統通知] 搜尋已完成：\n{search_results}\n請根據搜尋結果給予主人最終回覆。"})
-                
-                second_response = self.client.chat.completions.create(
-                    model=self.model, 
-                    messages=messages, 
-                    temperature=settings["temperature"]
-                )
-                
-                raw_second = second_response.choices[0].message.content
-                second_result = self._parse_response(raw_second)
-                
-                # 合併元數據，確保第一次思考產生的日誌、事實或演化標記不會遺失
-                for key, value in result.items():
-                    if key not in ['content', 'inner_thought', 'decision', 'search_query'] and key not in second_result:
-                        second_result[key] = value
-                result = second_result
-
-        # 處理圖像生成請求 (SSP)
-        if result.get('image_prompt'):
-            img_url = self.call_skill("image_generation", prompt=result['image_prompt'])
-            if img_url:
-                # 將圖片連結附加到回覆內容中
-                result['content'] = (result.get('content') or "") + f"\n\n🖼️ 我為你生成了這張圖片：\n{img_url}"
+        # 統一技能調用：向後相容 + 動態路由
+        result = self._execute_skill_action(result, messages, raw, settings, user_id,
+                                            followup_instruction="請根據結果給予主人最終回覆。")
 
         # 統一儲存回覆（避免搜尋過程中重複儲存）
         self._save_message(user_id, "assistant", result['content'])
@@ -633,7 +654,7 @@ class Soul:
         facts = ctx.get('facts', {})
         discovery_prompt = ""
         if facts.get('discovery_preference') == 'regular_fun_things':
-            discovery_prompt = "\n[探索模式已開啟] 主人喜歡有趣的科學、技術或自然發現。如果現在是適合分享的時機（例如距離上次分享已超過 12 小時），你可以使用 search_query 找些好玩的東西分享給他。"
+            discovery_prompt = "\n[探索模式已開啟] 主人喜歡有趣的科學、技術或自然發現。如果現在是適合分享的時機（例如距離上次分享已超過 12 小時），你可以使用 skill_action 搜尋有趣的東西分享給他。"
 
         prompt = HEARTBEAT_PROMPT.format(
             current_time=user_now.strftime("%Y-%m-%d %H:%M"),
@@ -657,23 +678,9 @@ class Soul:
         raw_content = raw_response.choices[0].message.content
         result = self._parse_response(raw_content)
 
-        # 支援搜尋請求
-        if result.get('search_query') and self.tavily:
-            search_results = self.search_web(result['search_query'])
-            if search_results:
-                messages.append({"role": "assistant", "content": raw_content})
-                messages.append({"role": "user", "content": f"[系統通知] 搜尋已完成：\n{search_results}\n請根據搜尋結果決定是否需要主動發言 (SPEAK/SILENT)。"})
-                second_response = self.client.chat.completions.create(
-                    model=self.model, 
-                    messages=messages, 
-                    temperature=settings["temperature"]
-                )
-                raw_second = second_response.choices[0].message.content
-                second_result = self._parse_response(raw_second)
-                for key, value in result.items():
-                    if key not in ['content', 'inner_thought', 'decision', 'search_query'] and key not in second_result:
-                        second_result[key] = value
-                result = second_result
+        # 統一技能調用
+        result = self._execute_skill_action(result, messages, raw_content, settings, user_id,
+                                            followup_instruction="請根據結果決定是否需要主動發言 (SPEAK/SILENT)。")
 
         # 處理心跳期間產生的日誌/事實/演化更新 (不論是否發言)
         if result.get('journal_update'): self._update_journal(user_id, result['journal_update'])

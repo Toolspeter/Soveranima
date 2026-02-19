@@ -3,4 +3,5 @@ openai
 python-dotenv
 certifi
 dotenv
+aiohttp
 tavily-python

@@ -2,6 +2,7 @@ import os
 import dotenv
 import certifi
 import asyncio
+import base64
 
 os.environ['SSL_CERT_FILE'] = certifi.where()
 os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
@@ -510,45 +511,47 @@ async def on_message(message):
             await asyncio.sleep(0.8)
             print(f"🧠 靈魂正在為 {user_id} 思考中...")
             
-            # 強化版視覺感知邏輯：全方位掃描當前訊息、回覆訊息及上下文，確保純文字訊息不崩潰
-            image_url = None
-            
-            async def extract_img(msg):
-                if not msg: return None
-                if msg.attachments:
-                    for a in msg.attachments:
-                        if any(a.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                            return a.url
-                if msg.embeds:
-                    for e in msg.embeds:
-                        if e.image and e.image.url: return e.image.url
-                return None
-
-            # 強化版視覺感知邏輯：引入時間鎖與來源標註，杜絕幻覺與崩潰
+            # 視覺感知邏輯：掃描當前訊息、回覆訊息及近期歷史，附帶來源標註防止幻覺
             image_url = None
             vision_context = ""
-            
-            async def extract_img(msg):
+
+            def extract_img(msg):
+                """從 Discord 訊息中提取圖片 URL（支援附件、Embed 圖片/縮圖、Sticker）"""
                 if not msg: return None
+                img_exts = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff')
+                # 1. 檢查附件（優先使用 proxy_url，避免 CDN token 過期導致 LLM 無法存取）
                 if msg.attachments:
                     for a in msg.attachments:
-                        if any(a.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                            return a.url
+                        is_image = a.filename.lower().endswith(img_exts) or (a.content_type and a.content_type.startswith('image/'))
+                        if is_image:
+                            return a.proxy_url or a.url
+                # 2. 檢查 Embed 的 image 和 thumbnail
                 if msg.embeds:
                     for e in msg.embeds:
-                        if e.image and e.image.url: return e.image.url
+                        if e.image and e.image.proxy_url:
+                            return e.image.proxy_url
+                        if e.image and e.image.url:
+                            return e.image.url
+                        if e.thumbnail and e.thumbnail.proxy_url:
+                            return e.thumbnail.proxy_url
+                        if e.thumbnail and e.thumbnail.url:
+                            return e.thumbnail.url
+                # 3. 檢查 Sticker
+                if msg.stickers:
+                    for s in msg.stickers:
+                        return s.url
                 return None
 
             # 1. 優先檢查當前訊息
-            image_url = await extract_img(message)
+            image_url = extract_img(message)
             if image_url:
                 vision_context = "[來源: 當前訊息附件]"
-            
+
             # 2. 檢查回覆目標
             if not image_url and message.reference and message.reference.message_id:
                 try:
                     ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                    image_url = await extract_img(ref_msg)
+                    image_url = extract_img(ref_msg)
                     if image_url:
                         vision_context = "[來源: 回覆目標訊息]"
                 except Exception:
@@ -562,12 +565,32 @@ async def on_message(message):
                         # 僅關聯 2 分鐘內的圖片，超過則視為無關，防止 AI 編造
                         if (message.created_at - m.created_at).total_seconds() > 120:
                             break
-                        image_url = await extract_img(m)
+                        image_url = extract_img(m)
                         if image_url:
                             vision_context = "[來源: 2分鐘內歷史紀錄]"
                             break
                 except Exception:
                     pass
+
+            if image_url:
+                # 下載圖片轉 base64，避免 Discord CDN URL 過期導致 LLM 無法存取
+                try:
+                    import aiohttp, ssl
+                    _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+                    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
+                        async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            if resp.status == 200:
+                                img_bytes = await resp.read()
+                                content_type = resp.content_type or "image/png"
+                                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                                image_url = f"data:{content_type};base64,{img_b64}"
+                                print(f"👁️ [視覺] 圖片已轉為 base64 ({len(img_bytes)} bytes, {content_type})")
+                            else:
+                                print(f"👁️ [視覺] ⚠️ 圖片下載失敗 HTTP {resp.status}，將以原始 URL 傳入")
+                except Exception as e:
+                    print(f"👁️ [視覺] ⚠️ 圖片下載異常: {e}，將以原始 URL 傳入")
+            else:
+                print(f"👁️ [視覺] 未偵測到圖片")
             
             # 處理回覆 (Reply) 文本上下文
             processed_content = message.content
@@ -580,8 +603,19 @@ async def on_message(message):
                     pass
 
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, client.soul.think, user_id, processed_content, image_url)
+            result = await loop.run_in_executor(None, client.soul.think, user_id, processed_content, image_url, vision_context)
             await asyncio.sleep(1.0)
+
+        # 如果有待執行的技能，先發送中間訊息（「讓我查一下」等），再繼續思考
+        if result.get('_pending_skill'):
+            if result.get("content"):
+                await send_long_message(message.channel, result["content"])
+            if result.get("inner_thought"):
+                print(f"💭 內心獨白: {result['inner_thought']}")
+
+            # 繼續執行技能 + 後續思考（帶 typing 指示器）
+            async with message.channel.typing():
+                result = await loop.run_in_executor(None, client.soul.continue_skill, result)
 
         if result.get("content"):
             await send_long_message(message.channel, result["content"])
@@ -617,6 +651,8 @@ async def heartbeat_loop():
                     continue
 
             result = await loop.run_in_executor(None, client.soul.heartbeat, user_id)
+            if result and result.get('_pending_skill'):
+                result = await loop.run_in_executor(None, client.soul.continue_skill, result)
             if result and result.get("content"):
                 await send_long_message(channel, result["content"])
                 print(f"💓 主動關心 {user_id}: {result['content'][:50]}...")
