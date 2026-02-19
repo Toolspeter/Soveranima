@@ -107,11 +107,14 @@ class ConfigView(ui.View):
         settings = client.soul.get_user_settings(self.user_id)
         heartbeat_status = "開啟" if settings["heartbeat_enabled"] else "關閉"
         approval_status = "需要手動批准" if client.soul.is_approval_required() else "自動執行"
+        tz_str = f"UTC{'+' if settings['timezone_offset'] >= 0 else ''}{settings['timezone_offset']}"
+        dnd_str = f"{settings.get('dnd_start', 22)}:00 - {settings.get('dnd_end', 7)}:00"
         await interaction.response.send_message(
             f"**目前設定：**\n"
             f"🌡️ 溫度：`{settings['temperature']}`\n"
-            f"💓 心跳：`{heartbeat_status}`\n"
-            f"⏱️ 心跳間隔：`{settings['heartbeat_interval']}` 分鐘\n"
+            f"🌐 時區：`{tz_str}`\n"
+            f"💓 心跳：`{heartbeat_status}` ({settings['heartbeat_interval']} 分鐘)\n"
+            f"🌙 DND 時段：`{dnd_str}`\n"
             f"🧬 升級審核：`{approval_status}`",
             ephemeral=True
         )

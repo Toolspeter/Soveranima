@@ -97,14 +97,17 @@ class Soul:
                 temperature REAL DEFAULT 0.8,
                 heartbeat_enabled INTEGER DEFAULT 1,
                 heartbeat_interval INTEGER DEFAULT 30,
-                timezone_offset INTEGER DEFAULT 0
+                timezone_offset INTEGER DEFAULT 0,
+                dnd_start INTEGER DEFAULT 22,
+                dnd_end INTEGER DEFAULT 7
             )
         """)
-        # 資料庫遷移：為舊表新增 timezone_offset 欄位
-        try:
-            cur.execute("ALTER TABLE user_settings ADD COLUMN timezone_offset INTEGER DEFAULT 0")
-        except Exception:
-            pass  # 欄位已存在則忽略
+        # 資料庫遷移：為舊表新增必要欄位
+        for column, default in [("timezone_offset", 0), ("dnd_start", 22), ("dnd_end", 7)]:
+            try:
+                cur.execute(f"ALTER TABLE user_settings ADD COLUMN {column} INTEGER DEFAULT {default}")
+            except Exception:
+                pass  # 欄位已存在則忽略
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pending_evolutions (
                 id INTEGER PRIMARY KEY,
@@ -195,8 +198,22 @@ class Soul:
             return None
 
     def search_web(self, query: str, max_results: int = 3) -> str:
-        """優先使用通用技能接口進行搜尋，若無則回退至 Tavily"""
-        result = self.call_skill("web_search", query=query, max_results=max_results)
+        """優先使用通用技能接口進行搜尋。針對天氣查詢，自動附加「當地官方氣象機構」關鍵字以確保準確性。"""
+        processed_query = query
+        # 偵測天氣相關關鍵字
+        weather_keywords = ["天氣", "氣溫", "weather", "temperature", "預報", "forecast"]
+        if any(k in query.lower() for k in weather_keywords):
+            # 根據關鍵字判斷地區，預設附加「官方氣象局」以過濾非官方資訊
+            if "中央氣象署" not in query and "CWA" not in query.upper():
+                # 這裡未來可擴充地理位置偵測邏輯
+                if any(loc in query for loc in ["台灣", "台北", "土城", "新北", "Taiwan"]):
+                    processed_query = f"{query} 中央氣象署 CWA"
+                elif any(loc in query for loc in ["日本", "東京", "大阪", "Japan", "Tokyo"]):
+                    processed_query = f"{query} 日本氣象廳 JMA"
+                else:
+                    processed_query = f"{query} official local meteorological authority"
+        
+        result = self.call_skill("web_search", query=processed_query, max_results=max_results)
         if result:
             return result
 
@@ -515,6 +532,13 @@ class Soul:
                         second_result[key] = value
                 result = second_result
 
+        # 處理圖像生成請求 (SSP)
+        if result.get('image_prompt'):
+            img_url = self.call_skill("image_generation", prompt=result['image_prompt'])
+            if img_url:
+                # 將圖片連結附加到回覆內容中
+                result['content'] = (result.get('content') or "") + f"\n\n🖼️ 我為你生成了這張圖片：\n{img_url}"
+
         # 統一儲存回覆（避免搜尋過程中重複儲存）
         self._save_message(user_id, "assistant", result['content'])
 
@@ -676,15 +700,19 @@ class Soul:
         try:
             import re
             # 預處理：尋找最外層的 JSON 物件，過濾掉 Markdown 代碼標籤或多餘文字
-            start = raw.find('{')
-            end = raw.rfind('}')
-            
-            if start != -1 and end != -1 and end > start:
-                text = raw[start:end+1]
+            # 優先尋找 Markdown JSON 區塊以提高精準度
+            json_block_match = re.search(r'```json\s*({.*?})\s*```', raw, re.DOTALL)
+            if json_block_match:
+                text = json_block_match.group(1)
             else:
-                text = raw.strip()
+                start = raw.find('{')
+                end = raw.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    text = raw[start:end+1]
+                else:
+                    text = raw.strip()
 
-            # 移除 Markdown 標籤並過濾控制字元
+            # 移除剩餘的 Markdown 標籤（若有）並過濾控制字元
             text = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
             text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
             
@@ -922,7 +950,10 @@ class Soul:
             """, (reason, file_path, old_code, new_code, now_str, now_str))
             self.db.commit()
 
-            return {"success": True, "message": f"自動升級完成: {reason[:50]}"}
+            # 執行自我重啟以套用變更，確保資料庫記錄已完成
+            self._restart_service()
+
+            return {"success": True, "message": f"自動升級完成: {reason[:50]}，系統正在重啟..."}
         except Exception as e:
             return {"success": False, "message": f"執行失敗: {str(e)}"}
 
