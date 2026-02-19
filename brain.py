@@ -349,8 +349,9 @@ class Soul:
             return {"success": False, "message": "無效的清除類型"}
 
     def think(self, user_id: str, user_input: str, image_url: str = None) -> dict:
-        self._save_message(user_id, "user", user_input)
+        # 先取得歷史紀錄，再儲存當前訊息，避免在 Prompt 中重複出現最新訊息導致 AI 誤判
         ctx = self.get_context(user_id)
+        self._save_message(user_id, "user", user_input)
         settings = self.get_user_settings(user_id)
 
         # AI 永遠可以反思程式碼

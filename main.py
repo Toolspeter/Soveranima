@@ -488,8 +488,17 @@ async def on_message(message):
         async with message.channel.typing():
             await asyncio.sleep(0.8)
             print(f"🧠 靈魂正在為 {user_id} 思考中...")
+            
+            # 辨識圖片附件
+            image_url = None
+            if message.attachments:
+                for attachment in message.attachments:
+                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                        image_url = attachment.url
+                        break
+            
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, client.soul.think, user_id, message.content)
+            result = await loop.run_in_executor(None, client.soul.think, user_id, message.content, image_url)
             await asyncio.sleep(1.0)
 
         if result.get("content"):
