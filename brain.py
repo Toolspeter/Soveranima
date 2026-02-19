@@ -12,11 +12,25 @@ try:
 except ImportError:
     TAVILY_AVAILABLE = False
 
-# AI 可以升級的檔案列表
+# 核心系統檔案清單（prompts.py 已被永久移除以確保安全）
 EVOLVABLE_FILES = ["brain.py", "main.py"]
 
 
 class Soul:
+    def _get_all_evolvable_files(self):
+        """動態獲取核心檔案與 skills/ 資料夾下的所有技能檔案"""
+        # 嚴格禁止感知或修改 prompts.py
+        files = [f for f in EVOLVABLE_FILES if "prompts.py" not in f]
+        skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+        if not os.path.exists(skills_dir):
+            os.makedirs(skills_dir)
+        
+        for f in os.listdir(skills_dir):
+            if f.endswith(".py"):
+                # 技能模組同樣禁止命名為 prompts 相關名稱以防注入
+                if "prompts" not in f.lower():
+                    files.append(os.path.join("skills", f))
+        return files
     def __init__(self, api_key: str, base_url: str = None, owner_id: str = None, model: str = "gemini-2.0-flash", tavily_api_key: str = None):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.owner_id = owner_id
@@ -53,6 +67,13 @@ class Soul:
                 id INTEGER PRIMARY KEY,
                 user_id TEXT UNIQUE,
                 data TEXT DEFAULT '{}',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS reflections (
+                user_id TEXT PRIMARY KEY,
+                last_thought TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -123,9 +144,9 @@ class Soul:
         cur = self.db.cursor()
         cur.execute("""
             INSERT INTO global_settings (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-        """, (key, value))
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """, (key, value, self._utc_now_str()))
         self.db.commit()
         return True
 
@@ -137,51 +158,28 @@ class Soul:
         """檢查升級是否需要手動批准"""
         return self.get_global_setting("approval_required", "1") == "1"
 
+    def _utc_now(self) -> datetime:
+        """取得當前 UTC 時間"""
+        from datetime import timezone
+        return datetime.now(timezone.utc)
+
+    def _utc_now_str(self) -> str:
+        """取得當前 UTC 時間字串（ISO 格式）"""
+        return self._utc_now().isoformat()
+
     def search_web(self, query: str, max_results: int = 3) -> str:
         """使用 Tavily 搜尋網路，回傳搜尋結果摘要"""
         if not self.tavily:
             return ""
 
-        def _try_auto_calibrate(content):
-            try:
-                import re
-                from datetime import timezone
-                now_utc = datetime.now(timezone.utc)
-                # 增加日期驗證：檢查內容中是否包含當前年份，防止誤信過期資訊
-                if str(now_utc.year) not in content:
-                    return False
-
-                match = re.search(r'(\d{1,2}):(\d{2}):(\d{2})', content)
-                if match:
-                    remote_hour = int(match.group(1))
-                    local_utc_hour = now_utc.hour
-                    bias = remote_hour - local_utc_hour
-                    if bias > 12: bias -= 24
-                    if bias < -12: bias += 24
-                    
-                    # 檢查冷卻時間 (7天)
-                    from datetime import timedelta
-                    last_sync_str = self.get_global_setting("last_time_sync_utc")
-                    if last_sync_str:
-                        last_sync = datetime.fromisoformat(last_sync_str)
-                        # 確保比對時兩者皆為 offset-aware (UTC)
-                        last_sync_aware = last_sync.replace(tzinfo=timezone.utc) if last_sync.tzinfo is None else last_sync
-                        if now_utc - last_sync_aware < timedelta(days=7):
-                            return False
-                    
-                    self.set_global_setting("system_time_bias", str(bias))
-                    self.set_global_setting("last_time_sync_utc", now_utc.isoformat())
-                    print(f"[Auto-Calibration] Clock offset adjusted to {bias}h via Tavily.")
-                    return True
-            except: pass
-            return False
-
         try:
+            # 提升搜尋深度並限制在 7 天內，確保資訊的新鮮度與準確性
             response = self.tavily.search(
                 query=query,
-                search_depth="basic",
+                search_depth="advanced",
                 max_results=max_results,
-                include_answer=True
+                include_answer=True,
+                search_days=7
             )
 
             results = []
@@ -198,41 +196,47 @@ class Soul:
             return ""
 
     def _get_source_code(self) -> str:
-        """取得可升級檔案的程式碼"""
+        """取得所有可演化檔案（含核心檔案與 skills/ 目錄）的程式碼"""
         source_parts = []
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # 使用動態獲取的檔案清單，確保包含 skills/ 下的檔案
+        all_files = self._get_all_evolvable_files()
 
-        for filename in EVOLVABLE_FILES:
-            filepath = os.path.join(base_dir, filename)
+        for filename in all_files:
+            # 如果 filename 是絕對路徑則直接使用，否則與 base_dir 結合
+            filepath = filename if os.path.isabs(filename) else os.path.join(base_dir, filename)
+            display_name = os.path.relpath(filepath, base_dir) if os.path.isabs(filepath) else filename
+            
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
-                source_parts.append(f"=== {filename} ===\n{content}")
+                source_parts.append(f"=== {display_name} ===\n{content}")
             except Exception:
                 pass
 
         return "\n\n".join(source_parts)
 
     def get_user_now(self, user_id: str):
-        """取得使用者在地時間 (基於 UTC 偏移與系統校準)"""
+        """取得使用者在地時間 (基於 UTC 偏移)"""
         from datetime import timezone, timedelta
         settings = self.get_user_settings(user_id)
         user_offset = settings.get("timezone_offset", 0)
-        # 取得系統校準值（補償伺服器時鐘誤差）
-        system_bias = int(self.get_global_setting("system_time_bias", "0"))
-        return datetime.now(timezone.utc) + timedelta(hours=user_offset + system_bias)
+        return datetime.now(timezone.utc) + timedelta(hours=user_offset)
 
     def get_user_settings(self, user_id: str) -> dict:
         """取得使用者設定"""
         cur = self.db.cursor()
-        cur.execute("SELECT temperature, heartbeat_enabled, heartbeat_interval, timezone_offset FROM user_settings WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT temperature, heartbeat_enabled, heartbeat_interval, timezone_offset, dnd_start, dnd_end FROM user_settings WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         if row:
             return {
                 "temperature": row[0],
                 "heartbeat_enabled": bool(row[1]),
                 "heartbeat_interval": row[2],
-                "timezone_offset": row[3]
+                "timezone_offset": row[3],
+                "dnd_start": row[4] if row[4] is not None else 22,
+                "dnd_end": row[5] if row[5] is not None else 7
             }
         # 預設值：Owner 為 +8, 其它為 0
         default_offset = 8 if self.is_owner(user_id) else 0
@@ -240,12 +244,14 @@ class Soul:
             "temperature": 0.8,
             "heartbeat_enabled": True,
             "heartbeat_interval": 30,
-            "timezone_offset": default_offset
+            "timezone_offset": default_offset,
+            "dnd_start": 22,
+            "dnd_end": 7
         }
 
     def update_user_setting(self, user_id: str, key: str, value) -> bool:
         """更新使用者設定"""
-        valid_keys = ["temperature", "heartbeat_enabled", "heartbeat_interval", "timezone_offset"]
+        valid_keys = ["temperature", "heartbeat_enabled", "heartbeat_interval", "timezone_offset", "dnd_start", "dnd_end"]
         if key not in valid_keys:
             return False
 
@@ -260,13 +266,16 @@ class Soul:
 
         cur.execute("""
             SELECT role, content FROM messages
-            WHERE user_id = ? ORDER BY timestamp DESC LIMIT 15
+            WHERE user_id = ? ORDER BY timestamp DESC LIMIT 25
         """, (user_id,))
         messages = [{"role": r, "content": c} for r, c in reversed(cur.fetchall())]
 
         cur.execute("SELECT content FROM journal WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         journal = row[0] if row else ""
+        # 限制日誌長度，保留最後 2000 個字元以確保上下文不溢出
+        if len(journal) > 2000:
+            journal = "... (前略) ...\n" + journal[-2000:]
 
         cur.execute("SELECT data FROM facts WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
@@ -287,10 +296,11 @@ class Soul:
         row = cur.fetchone()
         journal_length = len(row[0]) if row else 0
 
-        # 事實數量
+        # 事實數據與數量
         cur.execute("SELECT data FROM facts WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
-        facts_count = len(json.loads(row[0])) if row else 0
+        facts_data = json.loads(row[0]) if row else {}
+        facts_count = len(facts_data)
 
         # 最後互動時間
         cur.execute("SELECT timestamp FROM last_interaction WHERE user_id = ?", (user_id,))
@@ -303,8 +313,7 @@ class Soul:
                     last_utc = last_utc.replace(tzinfo=timezone.utc)
                 settings = self.get_user_settings(user_id)
                 offset = settings.get("timezone_offset", 0)
-                system_bias = int(self.get_global_setting("system_time_bias", "0"))
-                user_last = last_utc + timedelta(hours=offset + system_bias)
+                user_last = last_utc + timedelta(hours=offset)
                 last_interaction = user_last.strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
                 last_interaction = row[0]
@@ -318,6 +327,7 @@ class Soul:
             "message_count": message_count,
             "journal_length": journal_length,
             "facts_count": facts_count,
+            "facts": facts_data,
             "last_interaction": last_interaction,
             "settings": settings
         }
@@ -349,9 +359,11 @@ class Soul:
             return {"success": False, "message": "無效的清除類型"}
 
     def think(self, user_id: str, user_input: str, image_url: str = None) -> dict:
+        # 安全性檢查：限制輸入長度並過濾異常字元
+        sanitized_input = user_input.strip()[:2000]
         # 先取得歷史紀錄，再儲存當前訊息，避免在 Prompt 中重複出現最新訊息導致 AI 誤判
         ctx = self.get_context(user_id)
-        self._save_message(user_id, "user", user_input)
+        self._save_message(user_id, "user", sanitized_input)
         settings = self.get_user_settings(user_id)
 
         # AI 永遠可以反思程式碼
@@ -370,6 +382,13 @@ class Soul:
 [當前時間]
 {user_now.strftime("%Y年%m月%d日 %H:%M:%S")} (星期{['一','二','三','四','五','六','日'][user_now.weekday()]})
 
+[目前設定]
+- 溫度: {settings['temperature']}
+- 心跳開啟: {settings['heartbeat_enabled']}
+- 心跳間隔: {settings['heartbeat_interval']} 分鐘
+- 時區偏移: UTC{'+' if settings['timezone_offset'] >= 0 else ''}{settings['timezone_offset']}
+- DND 時段: {settings.get('dnd_start', 22)}:00 - {settings.get('dnd_end', 7)}:00
+
 [生活日誌]
 {ctx['journal'] or '（尚無紀錄）'}
 
@@ -385,9 +404,20 @@ class Soul:
         messages.extend(ctx['messages'])
 
         # 處理多模態內容
-        user_content = [{"type": "text", "text": user_input}]
+        user_content = []
+        if user_input.strip():
+            user_content.append({"type": "text", "text": user_input})
+
         if image_url:
+            # 如果有圖片但沒文字，補上預設說明以符合部分模型對非空文字的要求
+            if not user_content:
+                user_content.append({"type": "text", "text": "(分享了一張圖片)"})
             user_content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+        # 確保 content 不為空，若真的完全沒內容則填入原始輸入或預設值
+        if not user_content:
+            user_content.append({"type": "text", "text": user_input or "..."})
+
         messages.append({"role": "user", "content": user_content})
 
         response = self.client.chat.completions.create(
@@ -439,15 +469,25 @@ class Soul:
         if result.get('evolution_request'):
             evo = result['evolution_request']
             if all(k in evo for k in ['reason', 'file', 'old_code', 'new_code']):
-                if self.is_approval_required():
-                    evo_id = self.propose_evolution(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
-                    if evo_id:
-                        result['_evolution_proposed'] = evo_id
-                    else:
-                        result['_evolution_duplicate'] = True
-                else:
+                # 自動判斷是否為新技能開發
+                is_skill = "skills/" in evo['file'].lower() or not os.path.exists(evo['file'])
+                prefix = "[Skill] " if is_skill else "[Core] "
+                display_reason = prefix + evo['reason']
+                
+                # 核心檔案永遠遵循全域審核設定，但技能檔案可根據偏好選擇是否自動演化
+                is_core = any(core_file in evo['file'] for core_file in EVOLVABLE_FILES)
+                
+                if is_core and self.is_approval_required():
+                    evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
+                    if evo_id: result['_evolution_proposed'] = evo_id
+                    else: result['_evolution_duplicate'] = True
+                elif not is_core and self.get_global_setting('auto_skill_evolution', '0') == '1':
                     auto_result = self._auto_evolve(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
                     result['_evolution_auto'] = auto_result
+                else:
+                    # 預設行為：仍需手動批准
+                    evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
+                    if evo_id: result['_evolution_proposed'] = evo_id
 
         self._update_last_interaction(user_id)
         return result
@@ -475,84 +515,121 @@ class Soul:
         diff = now_utc - last_time
         hours = diff.total_seconds() / 3600
 
-        # 使用使用者設定的心跳間隔
-        min_interval_seconds = settings["heartbeat_interval"] * 60
+        # 取得使用者在地時間與設定
+        user_now = self.get_user_now(user_id)
+        current_hour = user_now.hour
+        dnd_start = settings.get("dnd_start", 22)
+        dnd_end = settings.get("dnd_end", 7)
+        
+        # 判斷是否處於 DND 期間
+        is_dnd = False
+        if dnd_start > dnd_end:
+            if current_hour >= dnd_start or current_hour < dnd_end: is_dnd = True
+        else:
+            if dnd_start <= current_hour < dnd_end: is_dnd = True
+
+        # 取得發言門檻：DND 期間固定為 9，平時使用使用者設定 (預設 5)
+        base_threshold = settings.get("heartbeat_threshold", 5)
+        current_threshold = 9 if is_dnd else base_threshold
+
+        # 動態調整檢查間隔：DND 期間嚴格遵守設定；活躍期間允許更頻繁的背景感知 (最短 10 分鐘)
+        check_interval = settings["heartbeat_interval"] if is_dnd else min(settings["heartbeat_interval"], 10)
+        min_interval_seconds = check_interval * 60
 
         if diff.total_seconds() < min_interval_seconds:
             return None
 
-        # 取得使用者自定義的靜音時段 (預設 22-07)
-        user_now = self.get_user_now(user_id)
-        current_hour = user_now.hour
-        
-        # 從使用者設定中讀取 DND 時段，若無則預留預設值
-        dnd_start = settings.get("dnd_start", 22)
-        dnd_end = settings.get("dnd_end", 7)
-        
-        if dnd_start > dnd_end:
-            if current_hour >= dnd_start or current_hour < dnd_end:
-                return None
-        else:
-            if dnd_start <= current_hour < dnd_end:
-                return None
-
         ctx = self.get_context(user_id)
         user_now = self.get_user_now(user_id)
+        # 檢查是否開啟探索模式
+        facts = ctx.get('facts', {})
+        discovery_prompt = ""
+        if facts.get('discovery_preference') == 'regular_fun_things':
+            discovery_prompt = "\n[探索模式已開啟] 主人喜歡有趣的科學、技術或自然發現。如果現在是適合分享的時機（例如距離上次分享已超過 12 小時），你可以使用 search_query 找些好玩的東西分享給他。"
+
         prompt = HEARTBEAT_PROMPT.format(
             current_time=user_now.strftime("%Y-%m-%d %H:%M"),
             time_since_last=f"{hours:.1f} 小時"
-        )
+        ) + discovery_prompt
+        
+        prompt += f"\n[重要性過濾] 目前發言門檻為 {current_threshold}/10。請先對你想說的話進行評分，如果重要性低於此門檻，請務必選擇 SILENT。"
+        if is_dnd:
+            prompt += "\n[DND 提醒] 目前為靜音時段，門檻已自動提升至 9/10，僅限極其重要或緊急之事項。"
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"[生活日誌]\n{ctx['journal']}\n\n{prompt}"}
         ]
 
-        response = self.client.chat.completions.create(
+        raw_response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=settings["temperature"]
         )
+        raw_content = raw_response.choices[0].message.content
+        result = self._parse_response(raw_content)
 
-        result = self._parse_response(response.choices[0].message.content)
+        # 支援搜尋請求
+        if result.get('search_query') and self.tavily:
+            search_results = self.search_web(result['search_query'])
+            if search_results:
+                messages.append({"role": "assistant", "content": raw_content})
+                messages.append({"role": "user", "content": f"[系統通知] 搜尋已完成：\n{search_results}\n請根據搜尋結果決定是否需要主動發言 (SPEAK/SILENT)。"})
+                second_response = self.client.chat.completions.create(
+                    model=self.model, 
+                    messages=messages, 
+                    temperature=settings["temperature"]
+                )
+                raw_second = second_response.choices[0].message.content
+                second_result = self._parse_response(raw_second)
+                for key, value in result.items():
+                    if key not in ['content', 'inner_thought', 'decision', 'search_query'] and key not in second_result:
+                        second_result[key] = value
+                result = second_result
+
+        # 處理心跳期間產生的日誌/事實/演化更新 (不論是否發言)
+        if result.get('journal_update'): self._update_journal(user_id, result['journal_update'])
+        if result.get('facts_update'): self._update_facts(user_id, result['facts_update'])
+        if result.get('evolution_request'):
+            evo = result['evolution_request']
+            if all(k in evo for k in ['reason', 'file', 'old_code', 'new_code']):
+                evo_id = self.propose_evolution(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
+                if evo_id: result['_evolution_proposed'] = evo_id
 
         if result['decision'] == 'SPEAK':
+            if is_dnd: print(f"🚨 [DND 打破] Soveranima 判斷事件重要，決定喚醒主人。")
             self._save_message(user_id, "assistant", result['content'])
             self._update_last_interaction(user_id)
             return result
+        else:
+            if is_dnd: print(f"💤 [DND 靜默思考] {user_now.strftime('%H:%M')} 思考完成。")
+            else: print(f"🍃 [心跳靜默] {user_now.strftime('%H:%M')} 無重要事項。")
+            return None
 
         return None
 
     def _parse_response(self, raw: str) -> dict:
         try:
             import re
-            # 核心邏輯：直接使用 Regex 擷取最外層大括號內容，跳過脆弱的 split 邏輯
-            match = re.search(r'(\{.*\})', raw, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
+            # 預處理：尋找最外層的 JSON 物件，過濾掉 Markdown 代碼標籤或多餘文字
+            start = raw.find('{')
+            end = raw.rfind('}')
+            
+            if start != -1 and end != -1 and end > start:
+                text = raw[start:end+1]
             else:
                 text = raw.strip()
 
-            text = text.strip()
-
-            # 如果開頭不是 {，嘗試找到第一個 {
-            if not text.startswith("{"):
-                start = text.find("{")
-                if start != -1:
-                    depth = 0
-                    end = -1
-                    for i, c in enumerate(text[start:], start):
-                        if c == "{":
-                            depth += 1
-                        elif c == "}":
-                            depth -= 1
-                            if depth == 0:
-                                end = i + 1
-                                break
-                    if end != -1:
-                        text = text[start:end]
-
-            return json.loads(text)
+            # 移除 Markdown 標籤並過濾控制字元
+            text = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+            
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                # 修復常見的 JSON 格式錯誤（如尾隨逗號）
+                text = re.sub(r',\s*([\]}])', r'\1', text)
+                return json.loads(text)
         except json.JSONDecodeError as e:
             try:
                 import re
@@ -649,6 +726,8 @@ class Soul:
         from datetime import timezone
         now_utc = datetime.now(timezone.utc).isoformat()
         if channel_id:
+            # 先清除其他可能佔用此頻道的 ID，避免重複心跳
+            cur.execute("UPDATE last_interaction SET channel_id = NULL WHERE channel_id = ? AND user_id != ?", (str(channel_id), user_id))
             cur.execute("""
                 INSERT INTO last_interaction (user_id, timestamp, channel_id)
                 VALUES (?, ?, ?)
@@ -664,31 +743,63 @@ class Soul:
 
     # ==================== 升級請求系統 ====================
 
-    def _has_similar_evolution(self, file_path: str, old_code: str) -> bool:
+    def _has_similar_evolution(self, file_path: str, old_code: str, reason: str) -> bool:
         """檢查是否已有相同或類似的升級請求（僅針對 pending 狀態）"""
         cur = self.db.cursor()
+        # 同時檢查 old_code 與 reason，避免邏輯或目標重複的請求
         cur.execute("""
             SELECT COUNT(*) FROM pending_evolutions
-            WHERE file_path = ? AND old_code = ? AND status = 'pending'
-        """, (file_path, old_code))
+            WHERE file_path = ? AND (old_code = ? OR reason = ?) AND status = 'pending'
+        """, (file_path, old_code, reason))
         if cur.fetchone()[0] > 0:
             return True
 
-        old_code_prefix = old_code[:100] if len(old_code) > 100 else old_code
+        # 模糊檢查：如果原因的前 20 個字元高度相似，也視為重複，防止語意重複
+        reason_prefix = reason[:20] if len(reason) > 20 else reason
         cur.execute("""
             SELECT COUNT(*) FROM pending_evolutions
-            WHERE file_path = ? AND old_code LIKE ? AND status = 'pending'
-        """, (file_path, f"{old_code_prefix}%"))
+            WHERE file_path = ? AND reason LIKE ? AND status = 'pending'
+        """, (file_path, f"%{reason_prefix}%"))
         return cur.fetchone()[0] > 0
 
     def propose_evolution(self, reason: str, file_path: str, old_code: str, new_code: str) -> int | None:
-        """AI 提出升級請求，回傳請求 ID。如果已有類似請求則回傳 None"""
-        if self._has_similar_evolution(file_path, old_code):
+        """AI 提出升級請求，回傳請求 ID。如果已有類似請求或路徑非法則回傳 None"""
+        # 1. 嚴格校驗路徑與實體檔案，防止路徑幻覺 (Code Drift)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        valid_files = self._get_all_evolvable_files()
+        
+        # 判斷是否為新技能開發（允許在 skills/ 目錄下建立新 .py 檔案）
+        is_new_skill = ("skills/" in file_path or "skills\\" in file_path) and file_path.endswith(".py")
+        
+        try:
+            if not is_new_skill:
+                # 核心檔案或現有技能：確保目標路徑在可演化清單中
+                if file_path not in valid_files and os.path.relpath(file_path, base_dir) not in valid_files:
+                    print(f"⚠️ 拒絕不存在的路徑演化請求: {file_path}")
+                    return None
+                
+                # 預先檢查 old_code 是否存在於目標檔案中
+                abs_path = file_path if os.path.isabs(file_path) else os.path.join(base_dir, file_path)
+                with open(abs_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if old_code not in content:
+                    print(f"⚠️ 提案失敗: old_code 與檔案內容不符 ({file_path})")
+                    return None
+            else:
+                # 新技能：確保 old_code 為空以代表新建檔案
+                if old_code.strip() != "":
+                    print(f"⚠️ 新技能提案失敗: 建立新檔案時 old_code 必須為空")
+                    return None
+        except Exception as e:
+            print(f"⚠️ 演化校驗出錯: {e}")
+            return None
+
+        if self._has_similar_evolution(file_path, old_code, reason):
             return None
 
         cur = self.db.cursor()
-        # 使用 Owner 的時間作為升級請求的顯示時間
-        now_str = self.get_user_now(self.owner_id).strftime("%Y-%m-%d %H:%M:%S")
+        # 使用 UTC 時間儲存
+        now_str = self._utc_now_str()
         cur.execute("""
             INSERT INTO pending_evolutions (reason, file_path, old_code, new_code, created_at)
             VALUES (?, ?, ?, ?, ?)
@@ -720,8 +831,8 @@ class Soul:
 
             # 記錄到資料庫（狀態直接設為 approved）
             cur = self.db.cursor()
-            # 自動升級使用 Owner 的在地時間作為記錄點
-            now_str = self.get_user_now(self.owner_id).strftime("%Y-%m-%d %H:%M:%S")
+            # 使用 UTC 時間儲存
+            now_str = self._utc_now_str()
             cur.execute("""
                 INSERT INTO pending_evolutions (reason, file_path, old_code, new_code, status, created_at, reviewed_at, reviewed_by)
                 VALUES (?, ?, ?, ?, 'approved', ?, ?, 'AUTO')
@@ -786,9 +897,9 @@ class Soul:
             cur = self.db.cursor()
             cur.execute("""
                 UPDATE pending_evolutions
-                SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = ?
+                SET status = 'approved', reviewed_at = ?, reviewed_by = ?
                 WHERE id = ?
-            """, (user_id, evolution_id))
+            """, (self._utc_now_str(), user_id, evolution_id))
             self.db.commit()
 
             # 執行自我重啟
@@ -818,9 +929,9 @@ class Soul:
         cur = self.db.cursor()
         cur.execute("""
             UPDATE pending_evolutions
-            SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = ?
+            SET status = 'rejected', reviewed_at = ?, reviewed_by = ?
             WHERE id = ?
-        """, (user_id, evolution_id))
+        """, (self._utc_now_str(), user_id, evolution_id))
         self.db.commit()
 
         return {"success": True, "message": f"升級 #{evolution_id} 已拒絕"}

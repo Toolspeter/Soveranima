@@ -18,7 +18,7 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", None)
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gemini-2.0-flash")
 OWNER_ID = os.getenv("OWNER_ID", None)
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", None)
-VERSION = "2.3.1-stable-restart"
+VERSION = "2.3.2-stable"
 
 if not DISCORD_TOKEN:
     raise ValueError("請在 .env 中設定 BOT_TOKEN")
@@ -61,24 +61,29 @@ class ConfigView(ui.View):
 
     @ui.button(label="溫度設定", style=discord.ButtonStyle.primary, emoji="🌡️")
     async def temperature_button(self, interaction: discord.Interaction, button: ui.Button):
+        settings = client.soul.get_user_settings(self.user_id)
         await interaction.response.send_message(
-            "選擇回應溫度（數值越高越有創意）：",
+            f"目前溫度：`{settings['temperature']}`\n選擇新回應溫度（數值越高越有創意）：",
             view=TemperatureSelectView(self.user_id),
             ephemeral=True
         )
 
     @ui.button(label="心跳設定", style=discord.ButtonStyle.primary, emoji="💓")
     async def heartbeat_button(self, interaction: discord.Interaction, button: ui.Button):
+        settings = client.soul.get_user_settings(self.user_id)
+        heartbeat_status = "開啟" if settings["heartbeat_enabled"] else "關閉"
         await interaction.response.send_message(
-            "心跳設定：",
+            f"目前心跳：`{heartbeat_status}` (間隔：`{settings['heartbeat_interval']}` 分鐘)\n請選擇設定：",
             view=HeartbeatConfigView(self.user_id),
             ephemeral=True
         )
 
     @ui.button(label="時區設定", style=discord.ButtonStyle.primary, emoji="🌐")
     async def timezone_button(self, interaction: discord.Interaction, button: ui.Button):
+        settings = client.soul.get_user_settings(self.user_id)
+        tz_str = f"UTC{'+' if settings['timezone_offset'] >= 0 else ''}{settings['timezone_offset']}"
         await interaction.response.send_message(
-            "選擇你的時區（相對於 UTC 的偏移）：",
+            f"目前時區：`{tz_str}`\n選擇你的新時區偏移 (UTC)：",
             view=TimezoneSelectView(self.user_id),
             ephemeral=True
         )
@@ -308,8 +313,9 @@ async def cmd_status(interaction: discord.Interaction):
     settings = status["settings"]
     heartbeat_status = "開啟" if settings["heartbeat_enabled"] else "關閉"
 
+    tz_str = f"UTC{'+' if settings['timezone_offset'] >= 0 else ''}{settings['timezone_offset']}"
     status_text = (
-        f"**機器人狀態 (v{VERSION})**\n"
+        f"**Soveranima 狀態 (v{VERSION})**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"💬 對話記錄：`{status['message_count']}` 則\n"
         f"📔 日誌長度：`{status['journal_length']}` 字元\n"
@@ -318,6 +324,7 @@ async def cmd_status(interaction: discord.Interaction):
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**目前設定**\n"
         f"🌡️ 溫度：`{settings['temperature']}`\n"
+        f"🌐 時區：`{tz_str}`\n"
         f"💓 心跳：`{heartbeat_status}` ({settings['heartbeat_interval']} 分鐘)"
     )
     await interaction.response.send_message(status_text)
@@ -448,16 +455,20 @@ async def on_ready():
     else:
         print("⚠️ 未設定 OWNER_ID，部分功能可能受限")
     
-    # 恢復 active_channels
+    # 恢復 active_channels (確保唯一性，優先保留最新紀錄)
     try:
         cur = client.soul.db.cursor()
-        cur.execute("SELECT user_id, channel_id FROM last_interaction WHERE channel_id IS NOT NULL")
+        cur.execute("SELECT user_id, channel_id FROM last_interaction WHERE channel_id IS NOT NULL ORDER BY timestamp DESC")
         rows = cur.fetchall()
+        seen_channels = set()
         for u_id, c_id in rows:
+            if c_id in seen_channels:
+                continue
             try:
                 channel = await client.fetch_channel(int(c_id))
                 client.active_channels[u_id] = channel
-                print(f"🔗 已恢復與使用者 {u_id} 的頻道連線")
+                seen_channels.add(c_id)
+                print(f"🔗 已恢復與使用者 {u_id} 的頻道連線 (ID: {u_id})")
             except Exception as e:
                 print(f"⚠️ 無法恢復頻道 {c_id}: {e}")
     except Exception as e:
@@ -497,7 +508,7 @@ async def on_message(message):
                         image_url = attachment.url
                         break
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, client.soul.think, user_id, message.content, image_url)
             await asyncio.sleep(1.0)
 
@@ -521,18 +532,16 @@ async def heartbeat_loop():
     
     for user_id, channel in list(client.active_channels.items()):
         try:
-            # 清理超過 7 天未互動的非活動頻道，節省記憶體
-            status = client.soul.get_status(user_id)
-            last_inter = status.get("last_interaction")
-            if last_inter and last_inter != "從未":
-                last_dt = datetime.strptime(last_inter, "%Y-%m-%d %H:%M:%S")
-                # 考慮時區偏移還原為 UTC 比較
-                settings = client.soul.get_user_settings(user_id)
-                offset = settings.get("timezone_offset", 0)
-                system_bias = int(client.soul.get_global_setting("system_time_bias", "0"))
-                last_utc = last_dt - timedelta(hours=offset + system_bias)
+            # 清理超過 7 天未互動的非活動頻道 (直接從 DB 讀取 UTC 時間進行比較)
+            cur = client.soul.db.cursor()
+            cur.execute("SELECT timestamp FROM last_interaction WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                last_utc = datetime.fromisoformat(row[0])
+                if last_utc.tzinfo is None:
+                    last_utc = last_utc.replace(tzinfo=timezone.utc)
                 
-                if (now - last_utc.replace(tzinfo=timezone.utc)).days > 7:
+                if (now - last_utc).days > 7:
                     del client.active_channels[user_id]
                     continue
 
