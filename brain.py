@@ -959,10 +959,14 @@ class Soul:
             """, (reason, file_path, old_code, new_code, now_str, now_str))
             self.db.commit()
 
-            # 執行自我重啟以套用變更，確保資料庫記錄已完成
-            self._restart_service()
-
-            return {"success": True, "message": f"自動升級完成: {reason[:50]}，系統正在重啟..."}
+            if is_core:
+                # 執行自我重啟以套用變更，確保資料庫記錄已完成
+                self._restart_service()
+                return {"success": True, "message": f"自動升級完成: {reason[:50]}，系統正在重啟..."}
+            else:
+                # 技能具有熱插拔特性，不執行自我重啟
+                return {"success": True, "message": f"技能升級完成: {reason[:50]}"}
+            
         except Exception as e:
             return {"success": False, "message": f"執行失敗: {str(e)}"}
 
