@@ -510,16 +510,77 @@ async def on_message(message):
             await asyncio.sleep(0.8)
             print(f"🧠 靈魂正在為 {user_id} 思考中...")
             
-            # 辨識圖片附件
+            # 強化版視覺感知邏輯：全方位掃描當前訊息、回覆訊息及上下文，確保純文字訊息不崩潰
             image_url = None
-            if message.attachments:
-                for attachment in message.attachments:
-                    if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
-                        image_url = attachment.url
-                        break
             
+            async def extract_img(msg):
+                if not msg: return None
+                if msg.attachments:
+                    for a in msg.attachments:
+                        if any(a.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                            return a.url
+                if msg.embeds:
+                    for e in msg.embeds:
+                        if e.image and e.image.url: return e.image.url
+                return None
+
+            # 強化版視覺感知邏輯：引入時間鎖與來源標註，杜絕幻覺與崩潰
+            image_url = None
+            vision_context = ""
+            
+            async def extract_img(msg):
+                if not msg: return None
+                if msg.attachments:
+                    for a in msg.attachments:
+                        if any(a.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']):
+                            return a.url
+                if msg.embeds:
+                    for e in msg.embeds:
+                        if e.image and e.image.url: return e.image.url
+                return None
+
+            # 1. 優先檢查當前訊息
+            image_url = await extract_img(message)
+            if image_url:
+                vision_context = "[來源: 當前訊息附件]"
+            
+            # 2. 檢查回覆目標
+            if not image_url and message.reference and message.reference.message_id:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                    image_url = await extract_img(ref_msg)
+                    if image_url:
+                        vision_context = "[來源: 回覆目標訊息]"
+                except Exception:
+                    pass
+
+            # 3. 檢查最近歷史 (引入 120s 時間鎖，防止誤讀舊圖)
+            if not image_url:
+                try:
+                    async for m in message.channel.history(limit=3):
+                        if m.id == message.id: continue
+                        # 僅關聯 2 分鐘內的圖片，超過則視為無關，防止 AI 編造
+                        if (message.created_at - m.created_at).total_seconds() > 120:
+                            break
+                        image_url = await extract_img(m)
+                        if image_url:
+                            vision_context = "[來源: 2分鐘內歷史紀錄]"
+                            break
+                except Exception:
+                    pass
+            
+            # 處理回覆 (Reply) 文本上下文
+            processed_content = message.content
+            if message.reference and message.reference.message_id:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                    ref_author = "我" if ref_msg.author == client.user else "你"
+                    processed_content = f"[回覆{ref_author}的訊息: \"{ref_msg.content[:200]}...\"]\n{processed_content}"
+                except Exception:
+                    pass
+
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, client.soul.think, user_id, message.content, image_url)
+            result = await loop.run_in_executor(None, client.soul.think, user_id, processed_content, image_url)
             await asyncio.sleep(1.0)
 
         if result.get("content"):
