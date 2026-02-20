@@ -572,20 +572,24 @@ async def on_message(message):
                 except Exception:
                     pass
 
-            # 3. 檢查最近歷史 (僅在非回覆且當前無圖時進行，並縮短時間鎖至 60s)
+            # 3. 檢查最近歷史 (僅在非回覆且當前無圖時進行，並縮短時間鎖至 30s，且僅在訊息極短或包含關鍵字時觸發)
             if not image_url and not is_reply_image:
-                try:
-                    async for m in message.channel.history(limit=3):
-                        if m.id == message.id: continue
-                        # 縮短至 60 秒，減少誤判機率
-                        if (message.created_at - m.created_at).total_seconds() > 60:
-                            break
-                        image_url = extract_img(m)
-                        if image_url:
-                            vision_context = "[來源: 60秒內歷史紀錄]"
-                            break
-                except Exception:
-                    pass
+                keywords = ['這', '那', '圖', '看', '什麼', '誰', '哪']
+                is_short = len(message.content) < 10
+                has_keyword = any(k in message.content for k in keywords)
+                
+                if is_short or has_keyword:
+                    try:
+                        async for m in message.channel.history(limit=3):
+                            if m.id == message.id: continue
+                            if (message.created_at - m.created_at).total_seconds() > 30:
+                                break
+                            image_url = extract_img(m)
+                            if image_url:
+                                vision_context = "[來源: 30秒內歷史紀錄]"
+                                break
+                    except Exception:
+                        pass
 
             if image_url:
                 # 下載圖片轉 base64，避免 Discord CDN URL 過期導致 LLM 無法存取
