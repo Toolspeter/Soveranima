@@ -183,12 +183,27 @@ class Soul:
         """取得當前 UTC 時間字串（ISO 格式）"""
         return self._utc_now().isoformat()
 
+    def _extract_content(self, content):
+        """提取 API 響應中的 content，兼容標準格式和數組格式"""
+        if isinstance(content, str):
+            # 標準 OpenAI 格式：content 是字符串
+            return content
+        elif isinstance(content, list):
+            # 兼容格式：content 是數組 [{"type": "text", "text": "..."}]
+            texts = []
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'text':
+                    texts.append(item.get('text', ''))
+            return '\n'.join(texts) if texts else ''
+        else:
+            # 未知格式，嘗試轉換為字符串
+            return str(content) if content else ''
+
     def call_skill(self, capability: str, **kwargs):
         """SSP v1.5: 透過單一入口點調用技能，完全委託給 Registry"""
         try:
             from skills.registry import SkillRegistry
-            # 注入必要的認證上下文
-            kwargs.setdefault("api_key", self.api_key)
+            # 注入必要        kwargs.setdefault("api_key", self.api_key)
             kwargs.setdefault("base_url", self.base_url)
             return SkillRegistry.get_instance().execute(capability, **kwargs)
         except ImportError:
@@ -555,7 +570,7 @@ class Soul:
             temperature=settings["temperature"]
         )
 
-        raw = response.choices[0].message.content
+        raw = self._extract_content(response.choices[0].message.content)
         result = self._parse_response(raw)
 
         # 統一技能調用：向後相容 + 動態路由
@@ -677,7 +692,7 @@ class Soul:
             messages=messages,
             temperature=settings["temperature"]
         )
-        raw_content = raw_response.choices[0].message.content
+        raw_content = self._extract_content(raw_response.choices[0].message.content)
         result = self._parse_response(raw_content)
 
         # 統一技能調用
