@@ -561,26 +561,28 @@ async def on_message(message):
                 vision_context = "[來源: 當前訊息附件]"
 
             # 2. 檢查回覆目標
+            is_reply_image = False
             if not image_url and message.reference and message.reference.message_id:
                 try:
                     ref_msg = await message.channel.fetch_message(message.reference.message_id)
                     image_url = extract_img(ref_msg)
                     if image_url:
                         vision_context = "[來源: 回覆目標訊息]"
+                        is_reply_image = True
                 except Exception:
                     pass
 
-            # 3. 檢查最近歷史 (引入 120s 時間鎖，防止誤讀舊圖)
-            if not image_url:
+            # 3. 檢查最近歷史 (僅在非回覆且當前無圖時進行，並縮短時間鎖至 60s)
+            if not image_url and not is_reply_image:
                 try:
                     async for m in message.channel.history(limit=3):
                         if m.id == message.id: continue
-                        # 僅關聯 2 分鐘內的圖片，超過則視為無關，防止 AI 編造
-                        if (message.created_at - m.created_at).total_seconds() > 120:
+                        # 縮短至 60 秒，減少誤判機率
+                        if (message.created_at - m.created_at).total_seconds() > 60:
                             break
                         image_url = extract_img(m)
                         if image_url:
-                            vision_context = "[來源: 2分鐘內歷史紀錄]"
+                            vision_context = "[來源: 60秒內歷史紀錄]"
                             break
                 except Exception:
                     pass
