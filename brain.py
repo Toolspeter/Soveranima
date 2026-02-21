@@ -300,7 +300,9 @@ class Soul:
                 messages=messages,
                 temperature=settings["temperature"]
             )
-            current_raw = next_response.choices[0].message.content
+            # current_raw = next_response.choices[0].message.content
+            current_raw = self._extract_content(next_response.choices[0].message.content)
+
             result = self._parse_response(current_raw)
 
             # 如果這輪沒有新的 skill_action，結束迴圈
