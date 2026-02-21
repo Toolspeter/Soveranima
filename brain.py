@@ -194,7 +194,7 @@ class Soul:
             for item in content:
                 if isinstance(item, dict) and item.get('type') == 'text':
                     texts.append(item.get('text', ''))
-            return '\n'.join(texts) if texts else ''
+            return texts[0] if texts else ''
         else:
             # 未知格式，嘗試轉換為字符串
             return str(content) if content else ''
