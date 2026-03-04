@@ -593,6 +593,7 @@ class Soul:
         # 處理升級請求
         if result.get('evolution_request'):
             evo = result['evolution_request']
+
             if all(k in evo for k in ['reason', 'file', 'old_code', 'new_code']):
                 # 自動判斷是否為新技能開發
                 is_skill = "skills/" in evo['file'].lower() or not os.path.exists(evo['file'])
@@ -616,6 +617,8 @@ class Soul:
                     # 預設行為：仍需手動批准
                     evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
                     if evo_id: result['_evolution_proposed'] = evo_id
+        else:
+            pass
 
         self._update_last_interaction(user_id)
         return result
@@ -727,7 +730,7 @@ class Soul:
             import re
             # 預處理：尋找最外層的 JSON 物件，過濾掉 Markdown 代碼標籤或多餘文字
             # 優先尋找 Markdown JSON 區塊以提高精準度
-            json_block_match = re.search(r'```json\s*({.*?})\s*```', raw, re.DOTALL)
+            json_block_match = re.search(r'```json\s*({.*})\s*```', raw, re.DOTALL)
             if json_block_match:
                 text = json_block_match.group(1)
             else:
@@ -751,9 +754,17 @@ class Soul:
         except json.JSONDecodeError as e:
             try:
                 import re
+                # 修復字符串值內的未轉義換行符
+                def fix_string_content(match):
+                    content = match.group(1)
+                    # 只替換真實的換行符，不影響已轉義的
+                    content = content.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                    return f'"{content}"'
+
                 fixed_text = text
                 fixed_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', fixed_text)
-                fixed_text = fixed_text.replace('\r\n', '\\n').replace('\r', '\\n')
+                # 使用正則匹配所有字符串值並修復其中的換行符
+                fixed_text = re.sub(r'"((?:[^"\\]|\\.)*)"', fix_string_content, fixed_text, flags=re.DOTALL)
                 return json.loads(fixed_text)
             except:
                 pass
