@@ -301,6 +301,9 @@ class Soul:
                 temperature=settings["temperature"]
             )
             # current_raw = next_response.choices[0].message.content
+            if not next_response or not next_response.choices:
+                print(f"❌ [後台錯誤] API 返回空響應或無有效 choices: {next_response}")
+                break
             current_raw = self._extract_content(next_response.choices[0].message.content)
 
             result = self._parse_response(current_raw)
@@ -572,6 +575,9 @@ class Soul:
             temperature=settings["temperature"]
         )
 
+        if not response or not response.choices:
+            print(f"❌ [後台錯誤] API 返回空響應或無有效 choices: {response}")
+            return {"content": "抱歉，我現在無法思考..."}
         raw = self._extract_content(response.choices[0].message.content)
         result = self._parse_response(raw)
 
@@ -697,6 +703,9 @@ class Soul:
             messages=messages,
             temperature=settings["temperature"]
         )
+        if not raw_response or not raw_response.choices:
+            print(f"❌ [後台錯誤] API 返回空響應或無有效 choices: {raw_response}")
+            return {"decision": "SILENT"}
         raw_content = self._extract_content(raw_response.choices[0].message.content)
         result = self._parse_response(raw_content)
 
