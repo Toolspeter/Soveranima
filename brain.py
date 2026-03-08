@@ -300,11 +300,17 @@ class Soul:
                 messages=messages,
                 temperature=settings["temperature"]
             )
-            # current_raw = next_response.choices[0].message.content
+
             if not next_response or not next_response.choices:
                 print(f"❌ [後台錯誤] API 返回空響應或無有效 choices: {next_response}")
                 break
+
             current_raw = self._extract_content(next_response.choices[0].message.content)
+
+            # 檢查是否返回空內容
+            if not current_raw or not current_raw.strip():
+                print(f"❌ [後台錯誤] 技能後續思考返回空內容")
+                break
 
             result = self._parse_response(current_raw)
 
@@ -510,8 +516,6 @@ class Soul:
         except Exception as e:
             print(f"⚠️ 自主感知技能清單失敗: {e}")
 
-        # AI 永遠可以反思程式碼
-        source_code = self._get_source_code()
         existing_evolutions = self.get_pending_evolutions()
         evo_list = ""
         if existing_evolutions:
@@ -539,9 +543,6 @@ class Soul:
 [事實清單]
 {json.dumps(ctx['facts'], ensure_ascii=False, indent=2)}
 {skills_catalog}
-
-[可升級的程式碼]
-{source_code}
 {evo_list}
 [最近對話]
 """
@@ -578,7 +579,14 @@ class Soul:
         if not response or not response.choices:
             print(f"❌ [後台錯誤] API 返回空響應或無有效 choices: {response}")
             return {"content": "抱歉，我現在無法思考..."}
+
         raw = self._extract_content(response.choices[0].message.content)
+
+        # 檢查 API 是否返回空內容
+        if not raw or not raw.strip():
+            print(f"❌ [後台錯誤] API 返回空內容")
+            return {"content": "抱歉，我現在無法思考..."}
+
         result = self._parse_response(raw)
 
         # 統一技能調用：向後相容 + 動態路由
@@ -586,7 +594,11 @@ class Soul:
                                             followup_instruction="請根據結果給予主人最終回覆。")
 
         # 統一儲存回覆（避免搜尋過程中重複儲存）
-        self._save_message(user_id, "assistant", result['content'])
+        # 只儲存非空的回覆內容
+        if result.get('content') and result['content'].strip():
+            self._save_message(user_id, "assistant", result['content'])
+        else:
+            print(f"⚠️ [警告] AI 回覆內容為空，不儲存到資料庫")
 
         if result.get('journal_update'):
             self._update_journal(user_id, result['journal_update'])
