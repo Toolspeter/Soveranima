@@ -621,20 +621,25 @@ class Soul:
                 # 核心檔案永遠遵循全域審核設定，但技能檔案可根據偏好選擇是否自動演化
                 is_core = any(core_file in evo['file'] for core_file in EVOLVABLE_FILES)
                 
-                # 核心檔案若涉及技能橋接且開啟自動演化，則視為受信任操作
-                is_skill_bridge = "[Skill]" in display_reason or "call_skill" in evo['new_code']
+                # 嚴格依 global_settings 決定行為，移除任何字串 heuristic
+                approval_required = self.is_approval_required()
+                auto_skill = self.get_global_setting('auto_skill_evolution', '1') == '1'
                 
-                if is_core and self.is_approval_required() and not (is_skill_bridge and self.get_global_setting('auto_skill_evolution', '0') == '1'):
-                    evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
-                    if evo_id: result['_evolution_proposed'] = evo_id
-                    else: result['_evolution_duplicate'] = True
-                elif (not is_core or is_skill_bridge) and self.get_global_setting('auto_skill_evolution', '0') == '1':
+                if approval_required:  # =1 → 核心必 pending，技能看 auto_skill
+                    if is_core:
+                        evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
+                        if evo_id: result['_evolution_proposed'] = evo_id
+                        else: result['_evolution_duplicate'] = True
+                    else:
+                        if auto_skill:
+                            auto_result = self._auto_evolve(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
+                            result['_evolution_auto'] = auto_result
+                        else:
+                            evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
+                            if evo_id: result['_evolution_proposed'] = evo_id
+                else:  # =0 → 全部自動
                     auto_result = self._auto_evolve(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
                     result['_evolution_auto'] = auto_result
-                else:
-                    # 預設行為：仍需手動批准
-                    evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
-                    if evo_id: result['_evolution_proposed'] = evo_id
         else:
             pass
 
