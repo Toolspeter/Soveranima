@@ -669,25 +669,27 @@ class Soul:
         diff = now_utc - last_time
         hours = diff.total_seconds() / 3600
 
-        # 取得使用者在地時間與設定
+        # 取得使用者在地時間與設定（僅用於顯示與DND判斷，不用於diff計算）
         user_now = self.get_user_now(user_id)
         current_hour = user_now.hour
         dnd_start = settings.get("dnd_start", 22)
         dnd_end = settings.get("dnd_end", 7)
         
-        # 判斷是否處於 DND 期間
+        # DND判斷使用UTC小時 + offset轉換
+        utc_hour = now_utc.hour
+        local_hour = (utc_hour + settings.get("timezone_offset", 0)) % 24
         is_dnd = False
         if dnd_start > dnd_end:
-            if current_hour >= dnd_start or current_hour < dnd_end: is_dnd = True
+            if local_hour >= dnd_start or local_hour < dnd_end: is_dnd = True
         else:
-            if dnd_start <= current_hour < dnd_end: is_dnd = True
+            if dnd_start <= local_hour < dnd_end: is_dnd = True
 
-        # 取得發言門檻：DND 期間固定為 9，平時使用使用者設定 (預設 5)
+        # 發言門檻：DND固定9，平時用設定值（預設5）
         base_threshold = settings.get("heartbeat_threshold", 5)
         current_threshold = 9 if is_dnd else base_threshold
 
-        # 動態調整檢查間隔：DND 期間嚴格遵守設定；活躍期間允許更頻繁的背景感知 (最短 10 分鐘)
-        check_interval = settings["heartbeat_interval"] if is_dnd else min(settings["heartbeat_interval"], 10)
+        # 固定使用設定的interval，不再動態縮短
+        check_interval = settings["heartbeat_interval"]
         min_interval_seconds = check_interval * 60
 
         if diff.total_seconds() < min_interval_seconds:
