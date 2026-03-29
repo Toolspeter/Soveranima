@@ -18,6 +18,7 @@ import subprocess
 from datetime import datetime
 from openai import OpenAI
 from prompts import SYSTEM_PROMPT, HEARTBEAT_PROMPT
+import memory_crud
 
 # 核心系統檔案清單（prompts.py 已被永久移除以確保安全）
 EVOLVABLE_FILES = ["brain.py", "main.py"]
@@ -136,7 +137,24 @@ class Soul:
         cur.execute("""
             INSERT OR IGNORE INTO global_settings (key, value) VALUES ('auto_skill_evolution', '1')
         """)
-        
+
+        # 永久記憶表 - 無大小和時間限制的重要記憶
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS permanent_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                importance INTEGER DEFAULT 5,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_permanent_memory_user
+            ON permanent_memory(user_id, importance DESC, created_at DESC)
+        """)
+
         # 確保 skills 目錄在初始化時即存在
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
         if not os.path.exists(skills_dir):
@@ -422,7 +440,16 @@ class Soul:
         row = cur.fetchone()
         facts = json.loads(row[0]) if row else {}
 
-        return {"messages": messages, "journal": journal, "facts": facts}
+        # 取得永久記憶（最多 10 條最重要的）
+        permanent_memories = self.get_permanent_memories(user_id, limit=10)
+        permanent_memory_text = ""
+        if permanent_memories:
+            permanent_memory_text = "\n\n【永久記憶】\n"
+            for mem_id, title, content, importance, created_at, updated_at in permanent_memories:
+                permanent_memory_text += f"- [{importance}/10] {title}: {content}\n"
+
+        return {"messages": messages, "journal": journal, "facts": facts,
+            "permanent_memory": permanent_memory_text}
 
     def get_status(self, user_id: str) -> dict:
         """取得使用者的記憶統計"""
@@ -442,6 +469,9 @@ class Soul:
         row = cur.fetchone()
         facts_data = json.loads(row[0]) if row else {}
         facts_count = len(facts_data)
+
+        # 永久記憶數量
+        permanent_memory_count = self.get_permanent_memory_stats(user_id)
 
         # 最後互動時間
         cur.execute("SELECT timestamp FROM last_interaction WHERE user_id = ?", (user_id,))
@@ -469,6 +499,7 @@ class Soul:
             "journal_length": journal_length,
             "facts_count": facts_count,
             "facts": facts_data,
+            "permanent_memory_count": permanent_memory_count,
             "last_interaction": last_interaction,
             "settings": settings
         }
@@ -489,11 +520,16 @@ class Soul:
             cur.execute("DELETE FROM facts WHERE user_id = ?", (user_id,))
             self.db.commit()
             return {"success": True, "message": "事實清單已清除"}
+        elif forget_type == "permanent_memory":
+            cur.execute("DELETE FROM permanent_memory WHERE user_id = ?", (user_id,))
+            self.db.commit()
+            return {"success": True, "message": "永久記憶已清除"}
         elif forget_type == "all":
             cur.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM journal WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM facts WHERE user_id = ?", (user_id,))
             cur.execute("DELETE FROM last_interaction WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM permanent_memory WHERE user_id = ?", (user_id,))
             self.db.commit()
             return {"success": True, "message": "所有記憶已清除"}
         else:
@@ -894,7 +930,28 @@ class Soul:
                 VALUES (?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET timestamp = excluded.timestamp
             """, (user_id, now_utc))
-        self.db.commit()
+
+    # === Permanent Memory Wrapper Methods ===
+    def add_permanent_memory(self, user_id: str, title: str, content: str, importance: int = 5):
+        """新增永久記憶"""
+        return memory_crud.add_permanent_memory(self.db, user_id, title, content, importance)
+    
+    def get_permanent_memories(self, user_id: str, limit: int = None):
+        """取得永久記憶列表"""
+        return memory_crud.get_permanent_memories(self.db, user_id, limit)
+    
+    def update_permanent_memory(self, memory_id: int, title: str = None, content: str = None, importance: int = None):
+        """更新永久記憶"""
+        return memory_crud.update_permanent_memory(self.db, memory_id, title, content, importance)
+    
+    def delete_permanent_memory(self, memory_id: int):
+        """刪除永久記憶"""
+        return memory_crud.delete_permanent_memory(self.db, memory_id)
+    
+    def get_permanent_memory_stats(self, user_id: str):
+        """取得永久記憶統計資訊"""
+        return memory_crud.get_permanent_memory_stats(self.db, user_id)
+
 
     # ==================== 升級請求系統 ====================
 
