@@ -578,6 +578,7 @@ class Soul:
 
 [事實清單]
 {json.dumps(ctx['facts'], ensure_ascii=False, indent=2)}
+{ctx['permanent_memory']}
 {skills_catalog}
 {evo_list}
 [最近對話]

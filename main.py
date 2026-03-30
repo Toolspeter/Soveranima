@@ -236,6 +236,7 @@ class ForgetView(ui.View):
             discord.SelectOption(label="對話記錄", value="messages", description="清除最近的對話記錄", emoji="💬"),
             discord.SelectOption(label="生活日誌", value="journal", description="清除累積的生活觀察", emoji="📔"),
             discord.SelectOption(label="事實清單", value="facts", description="清除記住的事實資料", emoji="📋"),
+            discord.SelectOption(label="永久記憶", value="permanent_memory", description="清除永久記憶", emoji="🧠"),
             discord.SelectOption(label="全部清除", value="all", description="清除所有記憶（無法復原）", emoji="🗑️"),
         ]
     )
@@ -344,6 +345,7 @@ async def cmd_status(interaction: discord.Interaction):
         f"💬 對話記錄：`{status['message_count']}` 則\n"
         f"📔 日誌長度：`{status['journal_length']}` 字元\n"
         f"📋 事實數量：`{status['facts_count']}` 項\n"
+        f"🧠 永久記憶：`{status['permanent_memory_count']}` 條\n"
         f"🕐 最後互動：`{status['last_interaction']}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"**目前設定**\n"
