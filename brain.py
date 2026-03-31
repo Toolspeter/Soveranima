@@ -64,9 +64,15 @@ class Soul:
                 id INTEGER PRIMARY KEY,
                 user_id TEXT UNIQUE,
                 content TEXT,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_compressed DATETIME
             )
         """)
+        # 為現有資料庫添加 last_compressed 欄位
+        try:
+            cur.execute("ALTER TABLE journal ADD COLUMN last_compressed DATETIME")
+        except Exception:
+            pass
         cur.execute("""
             CREATE TABLE IF NOT EXISTS facts (
                 id INTEGER PRIMARY KEY,
@@ -464,11 +470,20 @@ class Soul:
         row = cur.fetchone()
         journal_length = len(row[0]) if row else 0
 
-        # 事實數據與數量
+        # 事實數據與數量（遞迴計算所有層級的項目）
         cur.execute("SELECT data FROM facts WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         facts_data = json.loads(row[0]) if row else {}
-        facts_count = len(facts_data)
+
+        def count_items(obj):
+            if isinstance(obj, dict):
+                return sum(count_items(v) for v in obj.values())
+            elif isinstance(obj, list):
+                return len(obj)
+            else:
+                return 1
+
+        facts_count = count_items(facts_data)
 
         # 永久記憶數量
         permanent_memory_count = self.get_permanent_memory_stats(user_id)
@@ -543,6 +558,12 @@ class Soul:
         self._save_message(user_id, "user", sanitized_input)
         settings = self.get_user_settings(user_id)
 
+        # 檢查是否需要壓縮日誌
+        if self._should_compress_journal(user_id):
+            self._compress_journal(user_id)
+            # 重新取得壓縮後的上下文
+            ctx = self.get_context(user_id)
+
         # 動態獲取技能清單 (SSP)：利用封裝好的方法實現純粹的自主感知
         skills_catalog = ""
         try:
@@ -562,9 +583,21 @@ class Soul:
                 evo_list += f"{status_emoji} #{e['id']} ({e['file_path']}): {e['reason'][:50]}...\n"
 
         user_now = self.get_user_now(user_id)
+
+        # 檢查是否需要觸發記憶整理提示
+        journal_reorg_hint = self._trigger_journal_reorganization(user_id)
+        pm_compress_hint = self._trigger_permanent_memory_compression(user_id)
+
         context_prompt = f"""
-[當前時間]
-{user_now.strftime("%Y年%m月%d日 %H:%M:%S")} (星期{['一','二','三','四','五','六','日'][user_now.weekday()]})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏰ 現在時間：{user_now.strftime("%Y年%m月%d日 %H:%M:%S")} (星期{['一','二','三','四','五','六','日'][user_now.weekday()]})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+重要提醒：
+- 上方顯示的是「現在」的時間
+- 下方日誌中的時間戳記（如 17:09）是「過去」的記錄
+- 請根據「現在時間」來判斷事件的時序關係
+- 不要把日誌裡的時間當作現在的時間
 
 [目前設定]
 - 溫度: {settings['temperature']}
@@ -581,6 +614,8 @@ class Soul:
 {ctx['permanent_memory']}
 {skills_catalog}
 {evo_list}
+{journal_reorg_hint}
+{pm_compress_hint}
 [最近對話]
 """
         messages = [{"role": "system", "content": SYSTEM_PROMPT + context_prompt}]
@@ -639,11 +674,19 @@ class Soul:
 
         if result.get('journal_update'):
             self._update_journal(user_id, result['journal_update'])
+        if result.get('journal_reorganize'):
+            self._reorganize_journal(user_id, result['journal_reorganize'])
         if result.get('facts_update'):
             self._update_facts(user_id, result['facts_update'])
         if result.get('settings_update'):
             for key, value in result['settings_update'].items():
                 self.update_user_setting(user_id, key, value)
+        if result.get('permanent_memory_add'):
+            pm = result['permanent_memory_add']
+            if 'title' in pm and 'content' in pm:
+                importance = pm.get('importance', 5)
+                self.add_permanent_memory(user_id, pm['title'], pm['content'], importance)
+                print(f"🧠 [永久記憶] 新增：{pm['title']} (重要度: {importance})")
 
         # 處理升級請求
         if result.get('evolution_request'):
@@ -711,15 +754,13 @@ class Soul:
         current_hour = user_now.hour
         dnd_start = settings.get("dnd_start", 22)
         dnd_end = settings.get("dnd_end", 7)
-        
-        # DND判斷使用UTC小時 + offset轉換
-        utc_hour = now_utc.hour
-        local_hour = (utc_hour + settings.get("timezone_offset", 0)) % 24
+
+        # DND判斷使用使用者本地時間
         is_dnd = False
         if dnd_start > dnd_end:
-            if local_hour >= dnd_start or local_hour < dnd_end: is_dnd = True
+            if current_hour >= dnd_start or current_hour < dnd_end: is_dnd = True
         else:
-            if dnd_start <= local_hour < dnd_end: is_dnd = True
+            if dnd_start <= current_hour < dnd_end: is_dnd = True
 
         # 發言門檻：DND固定9，平時用設定值（預設5）
         base_threshold = settings.get("heartbeat_threshold", 5)
@@ -769,8 +810,7 @@ class Soul:
         result = self._execute_skill_action(result, messages, raw_content, settings, user_id,
                                             followup_instruction="請根據結果決定是否需要主動發言 (SPEAK/SILENT)。")
 
-        # 處理心跳期間產生的日誌/事實/演化更新 (不論是否發言)
-        if result.get('journal_update'): self._update_journal(user_id, result['journal_update'])
+        # 處理 facts 和 evolution（不論是否發言）
         if result.get('facts_update'): self._update_facts(user_id, result['facts_update'])
         if result.get('evolution_request'):
             evo = result['evolution_request']
@@ -780,6 +820,8 @@ class Soul:
 
         if result['decision'] == 'SPEAK':
             if is_dnd: print(f"🚨 [DND 打破] Soveranima 判斷事件重要，決定喚醒主人。")
+            # 只在 SPEAK 時才寫入 journal（避免 WAIT 時的無意義記錄）
+            if result.get('journal_update'): self._update_journal(user_id, result['journal_update'])
             self._save_message(user_id, "assistant", result['content'])
             self._update_last_interaction(user_id)
             return result
@@ -888,11 +930,11 @@ class Soul:
         cur = self.db.cursor()
         from datetime import timezone
         now_utc = datetime.now(timezone.utc).isoformat()
-        # 自動加入使用者在地時間前綴
+        # 自動加入使用者在地時間前綴（包含日期）
         user_now = self.get_user_now(user_id)
-        timestamp_prefix = user_now.strftime("%H:%M")
-        formatted_content = f"{timestamp_prefix}，{content}"
-        
+        timestamp_prefix = user_now.strftime("%m/%d %H:%M")
+        formatted_content = f"[{timestamp_prefix}] {content}"
+
         cur.execute("""
             INSERT INTO journal (user_id, content, updated_at)
             VALUES (?, ?, ?)
@@ -901,6 +943,23 @@ class Soul:
                 updated_at = excluded.updated_at
         """, (user_id, formatted_content, now_utc))
         self.db.commit()
+
+    def _reorganize_journal(self, user_id: str, new_content: str):
+        """AI 主導的日誌重組：完全替換日誌內容"""
+        cur = self.db.cursor()
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc).isoformat()
+
+        cur.execute("""
+            INSERT INTO journal (user_id, content, updated_at, last_compressed)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                content = excluded.content,
+                updated_at = excluded.updated_at,
+                last_compressed = excluded.last_compressed
+        """, (user_id, new_content, now_utc, now_utc))
+        self.db.commit()
+        print(f"📝 [日誌重組] 使用者 {user_id} 的日誌已由 AI 重新整理")
 
     def _update_facts(self, user_id: str, new_facts: dict):
         cur = self.db.cursor()
@@ -959,6 +1018,121 @@ class Soul:
     def get_permanent_memory_stats(self, user_id: str):
         """取得永久記憶統計資訊"""
         return memory_crud.get_permanent_memory_stats(self.db, user_id)
+
+    # ==================== 記憶壓縮系統 ====================
+
+    def _should_compress_journal(self, user_id: str) -> bool:
+        """判斷是否需要壓縮日誌"""
+        cur = self.db.cursor()
+        cur.execute("SELECT content, last_compressed FROM journal WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+
+        content, last_compressed = row
+        journal_length = len(content) if content else 0
+
+        # 條件 1: 日誌超過 5000 字元
+        if journal_length > 5000:
+            return True
+
+        # 條件 2: 距離上次壓縮超過 24 小時
+        if last_compressed:
+            from datetime import timezone, timedelta
+            last_compressed_dt = datetime.fromisoformat(last_compressed)
+            if last_compressed_dt.tzinfo is None:
+                last_compressed_dt = last_compressed_dt.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if (now_utc - last_compressed_dt) > timedelta(hours=24):
+                return True
+
+        return False
+
+    def _compress_journal(self, user_id: str):
+        """壓縮日誌：保留最後 3000 字元"""
+        cur = self.db.cursor()
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc).isoformat()
+
+        cur.execute("SELECT content FROM journal WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return
+
+        content = row[0]
+        if len(content) > 3000:
+            compressed_content = "... (已自動壓縮舊日誌) ...\n" + content[-3000:]
+            cur.execute("""
+                UPDATE journal
+                SET content = ?, last_compressed = ?, updated_at = ?
+                WHERE user_id = ?
+            """, (compressed_content, now_utc, now_utc, user_id))
+            self.db.commit()
+            print(f"📦 [壓縮] 使用者 {user_id} 的日誌已壓縮：{len(content)} → {len(compressed_content)} 字元")
+
+    def _trigger_journal_reorganization(self, user_id: str) -> str:
+        """觸發 AI 主導的日誌重組（返回提示文字）"""
+        cur = self.db.cursor()
+        cur.execute("SELECT content FROM journal WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return ""
+
+        journal_length = len(row[0])
+        if journal_length > 5000:
+            return f"""
+[日誌重組提示]
+當前日誌長度：{journal_length} 字元（已超過建議上限 5000）
+請主動整理日誌：
+1. 刪除不重要的對話記錄
+2. 精簡重複或過時的資訊
+3. 將重要的長期資訊移入 permanent_memory（使用 permanent_memory_add）
+4. 使用 journal_reorganize 欄位重寫精簡後的日誌
+
+範例：
+```json
+{{
+  "journal_reorganize": "精簡後的日誌內容（建議 2000-3000 字元）",
+  "permanent_memory_add": {{
+    "title": "重要事項標題",
+    "content": "從日誌中提取的重要長期資訊",
+    "importance": 8
+  }}
+}}
+```
+"""
+        return ""
+
+    def _should_compress_permanent_memory(self, user_id: str) -> bool:
+        """判斷是否需要壓縮永久記憶"""
+        count = self.get_permanent_memory_stats(user_id)
+        # 當永久記憶超過 50 條時觸發壓縮
+        return count > 50
+
+    def _trigger_permanent_memory_compression(self, user_id: str) -> str:
+        """觸發 AI 主導的永久記憶壓縮（返回提示文字）"""
+        if not self._should_compress_permanent_memory(user_id):
+            return ""
+
+        memories = self.get_permanent_memories(user_id, limit=None)
+        count = len(memories)
+
+        return f"""
+[永久記憶壓縮提示]
+當前永久記憶數量：{count} 條（已超過建議上限 50）
+請主動整理永久記憶：
+1. 合併相似或重複的記憶
+2. 刪除過時或不再重要的記憶
+3. 提高真正重要記憶的 importance 評分
+
+你可以：
+- 讀取所有永久記憶（已在上下文中顯示前 10 條）
+- 使用 update_permanent_memory 更新記憶
+- 使用 delete_permanent_memory 刪除記憶（需要記憶 ID）
+- 使用 permanent_memory_add 新增合併後的記憶
+
+注意：這個過程對使用者透明，不要在 content 中提及。
+"""
 
 
     # ==================== 升級請求系統 ====================
