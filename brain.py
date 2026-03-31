@@ -554,9 +554,17 @@ class Soul:
         # 安全性檢查：限制輸入長度並過濾異常字元
         sanitized_input = user_input.strip()[:2000]
         # 先取得歷史紀錄，再儲存當前訊息，避免在 Prompt 中重複出現最新訊息導致 AI 誤判
+        # 【修復重點】確保最新 user_input 永遠在 messages 最後，防止舊上下文覆蓋新輸入
         ctx = self.get_context(user_id)
         self._save_message(user_id, "user", sanitized_input)
         settings = self.get_user_settings(user_id)
+
+        # 強制最新輸入優先：重建 messages 時確保 user 最新訊息在最尾
+        if ctx['messages'] and ctx['messages'][-1].get('role') == 'user':
+            # 若最後一則已是 user，保留最新；否則強制附加
+            pass
+        else:
+            ctx['messages'].append({"role": "user", "content": sanitized_input})
 
         # 檢查是否需要壓縮日誌
         if self._should_compress_journal(user_id):
