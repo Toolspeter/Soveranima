@@ -696,6 +696,28 @@ class Soul:
                 self.add_permanent_memory(user_id, pm['title'], pm['content'], importance)
                 print(f"🧠 [永久記憶] 新增：{pm['title']} (重要度: {importance})")
 
+        if result.get('permanent_memory_delete'):
+            memory_ids = result['permanent_memory_delete']
+            if isinstance(memory_ids, int):
+                memory_ids = [memory_ids]
+            for memory_id in memory_ids:
+                if self.delete_permanent_memory(memory_id):
+                    print(f"🗑️ [永久記憶] 刪除：ID {memory_id}")
+                else:
+                    print(f"⚠️ [永久記憶] 刪除失敗：ID {memory_id} 不存在")
+
+        if result.get('permanent_memory_update'):
+            pm = result['permanent_memory_update']
+            if 'id' in pm:
+                memory_id = pm['id']
+                title = pm.get('title')
+                content = pm.get('content')
+                importance = pm.get('importance')
+                if self.update_permanent_memory(memory_id, title, content, importance):
+                    print(f"✏️ [永久記憶] 更新：ID {memory_id}")
+                else:
+                    print(f"⚠️ [永久記憶] 更新失敗：ID {memory_id} 不存在")
+
         # 處理升級請求
         if result.get('evolution_request'):
             evo = result['evolution_request']
@@ -1135,9 +1157,21 @@ class Soul:
 
 你可以：
 - 讀取所有永久記憶（已在上下文中顯示前 10 條）
-- 使用 update_permanent_memory 更新記憶
-- 使用 delete_permanent_memory 刪除記憶（需要記憶 ID）
+- 使用 permanent_memory_update 更新記憶（需要 id 和要更新的欄位）
+- 使用 permanent_memory_delete 刪除記憶（傳入記憶 ID 陣列）
 - 使用 permanent_memory_add 新增合併後的記憶
+
+範例：
+```json
+{{
+  "permanent_memory_delete": [1, 5, 8],
+  "permanent_memory_add": {{
+    "title": "合併後的記憶標題",
+    "content": "合併多條相似記憶的內容",
+    "importance": 8
+  }}
+}}
+```
 
 注意：這個過程對使用者透明，不要在 content 中提及。
 """

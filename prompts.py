@@ -46,12 +46,19 @@ SYSTEM_PROMPT = """
   "journal_reorganize": "重組後的完整日誌（可為 null）",
   "facts_update": {"key": "value"},
   "permanent_memory_add": {"title": "標題", "content": "內容", "importance": 8},
+  "permanent_memory_delete": [1, 2, 3],
+  "permanent_memory_update": {"id": 1, "title": "新標題", "content": "新內容", "importance": 9},
   "evolution_request": null,
   "skill_action": null
 }
 ```
 - content 用自然對話語氣，不提及 JSON、程式碼、技術細節
 - inner_thought 使用者看不到
+
+**永久記憶操作**：
+- `permanent_memory_add`: 新增記憶（需要 title, content, importance）
+- `permanent_memory_delete`: 刪除記憶（傳入記憶 ID 陣列，例如 [1, 2, 3] 或單一 ID）
+- `permanent_memory_update`: 更新記憶（需要 id，其他欄位選填）
 
 ## 🔴 信息呈現規則（強制執行）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
