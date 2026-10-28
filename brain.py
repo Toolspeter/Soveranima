@@ -20,14 +20,14 @@ from openai import OpenAI
 from prompts import SYSTEM_PROMPT, HEARTBEAT_PROMPT
 import memory_crud
 
-# 核心系統檔案清單（prompts.py 已被永久移除以確保安全）
+
 EVOLVABLE_FILES = ["brain.py", "main.py"]
 
 
 class Soul:
     def _get_all_evolvable_files(self):
         """動態獲取核心檔案與 skills/ 資料夾下的所有技能檔案"""
-        # 嚴格禁止感知或修改 prompts.py
+        
         files = [f for f in EVOLVABLE_FILES if "prompts.py" not in f]
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
         if not os.path.exists(skills_dir):
@@ -35,7 +35,7 @@ class Soul:
         
         for f in os.listdir(skills_dir):
             if f.endswith(".py"):
-                # 技能模組同樣禁止命名為 prompts 相關名稱以防注入
+                
                 if "prompts" not in f.lower():
                     files.append(os.path.join("skills", f))
         return files
@@ -68,7 +68,7 @@ class Soul:
                 last_compressed DATETIME
             )
         """)
-        # 為現有資料庫添加 last_compressed 欄位
+        
         try:
             cur.execute("ALTER TABLE journal ADD COLUMN last_compressed DATETIME")
         except Exception:
@@ -110,12 +110,12 @@ class Soul:
                 dnd_end INTEGER DEFAULT 7
             )
         """)
-        # 資料庫遷移：為舊表新增必要欄位
+        
         for column, default in [("timezone_offset", 0), ("dnd_start", 22), ("dnd_end", 7)]:
             try:
                 cur.execute(f"ALTER TABLE user_settings ADD COLUMN {column} INTEGER DEFAULT {default}")
             except Exception:
-                pass  # 欄位已存在則忽略
+                pass  
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pending_evolutions (
                 id INTEGER PRIMARY KEY,
@@ -136,7 +136,7 @@ class Soul:
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # 預設核心需要手動批准，但技能模組預設允許自動演化以提升效率
+        
         cur.execute("""
             INSERT OR IGNORE INTO global_settings (key, value) VALUES ('approval_required', '1')
         """)
@@ -144,7 +144,7 @@ class Soul:
             INSERT OR IGNORE INTO global_settings (key, value) VALUES ('auto_skill_evolution', '1')
         """)
 
-        # 永久記憶表 - 無大小和時間限制的重要記憶
+        
         cur.execute("""
             CREATE TABLE IF NOT EXISTS permanent_memory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,7 +161,7 @@ class Soul:
             ON permanent_memory(user_id, importance DESC, created_at DESC)
         """)
 
-        # 確保 skills 目錄在初始化時即存在
+        
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
         if not os.path.exists(skills_dir):
             os.makedirs(skills_dir)
@@ -210,24 +210,24 @@ class Soul:
     def _extract_content(self, content):
         """提取 API 響應中的 content，兼容標準格式和數組格式"""
         if isinstance(content, str):
-            # 標準 OpenAI 格式：content 是字符串
+            
             return content
         elif isinstance(content, list):
-            # 兼容格式：content 是數組 [{"type": "text", "text": "..."}]
+            
             texts = []
             for item in content:
                 if isinstance(item, dict) and item.get('type') == 'text':
                     texts.append(item.get('text', ''))
             return texts[0] if texts else ''
         else:
-            # 未知格式，嘗試轉換為字符串
+            
             return str(content) if content else ''
 
     def call_skill(self, capability: str, **kwargs):
         """SSP v1.5: 透過單一入口點調用技能，完全委託給 Registry"""
         try:
             from skills.registry import SkillRegistry
-            # 注入必要        kwargs.setdefault("api_key", self.api_key)
+            
             kwargs.setdefault("base_url", self.base_url)
             return SkillRegistry.get_instance().execute(capability, **kwargs)
         except ImportError:
@@ -268,7 +268,7 @@ class Soul:
         if not action:
             return result
 
-        # 標記待執行的技能，讓 main.py 可以先發送中間訊息
+        
         result['_pending_skill'] = {
             'messages': messages,
             'raw': raw,
@@ -304,12 +304,12 @@ class Soul:
             params = action.get('params', {})
             print(f"⚡ [SSP] 第{round_num}輪 執行技能: {capability} params={list(params.keys())}")
 
-            # 執行技能
+            
             skill_result = self.call_skill(capability, **params)
             if not skill_result and 'search' in capability.lower():
                 skill_result = self.search_web(params.get('query', ''))
 
-            # 注入結果（成功或失敗）到對話，進行下一輪思考
+            
             messages.append({"role": "assistant", "content": current_raw})
             if skill_result:
                 print(f"⚡ [SSP] {capability} 執行成功")
@@ -331,19 +331,19 @@ class Soul:
 
             current_raw = self._extract_content(next_response.choices[0].message.content)
 
-            # 檢查是否返回空內容
+            
             if not current_raw or not current_raw.strip():
                 print(f"❌ [後台錯誤] 技能後續思考返回空內容")
                 break
 
             result = self._parse_response(current_raw)
 
-            # 如果這輪沒有新的 skill_action，結束迴圈
+            
             result = self._normalize_skill_action(result)
             if not result.get('skill_action'):
                 break
 
-        # 合併元數據
+        
         merge_exclude = {'content', 'inner_thought', 'decision', 'search_query', 'image_prompt', 'skill_action', '_pending_skill'}
         for key, value in first_result.items():
             if key not in merge_exclude and key not in result:
@@ -363,7 +363,7 @@ class Soul:
         source_parts = []
         base_dir = os.path.dirname(os.path.abspath(__file__))
         
-        # 注入可用技能的摘要資訊，幫助 AI 理解當前能力範圍
+        
         manifests = self._get_skills_manifests()
         if manifests:
             skill_summary = "[已掛載技能清單]\n" + "\n".join([f"- {m.get('name')} (ID: {m.get('id')}): {m.get('description')}" for m in manifests])
@@ -403,7 +403,7 @@ class Soul:
                 "dnd_start": row[4] if row[4] is not None else 22,
                 "dnd_end": row[5] if row[5] is not None else 7
             }
-        # 預設值：Owner 為 +8, 其它為 0
+        
         default_offset = 8 if self.is_owner(user_id) else 0
         return {
             "temperature": 0.8,
@@ -438,7 +438,7 @@ class Soul:
         cur.execute("SELECT content FROM journal WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         journal = row[0] if row else ""
-        # 限制日誌長度，保留最後 2000 個字元以確保上下文不溢出
+        
         if len(journal) > 2000:
             journal = "... (前略) ...\n" + journal[-2000:]
 
@@ -446,7 +446,7 @@ class Soul:
         row = cur.fetchone()
         facts = json.loads(row[0]) if row else {}
 
-        # 取得永久記憶（最多 10 條最重要的）
+        
         permanent_memories = self.get_permanent_memories(user_id, limit=10)
         permanent_memory_text = ""
         if permanent_memories:
@@ -461,16 +461,16 @@ class Soul:
         """取得使用者的記憶統計"""
         cur = self.db.cursor()
 
-        # 訊息數量
+        
         cur.execute("SELECT COUNT(*) FROM messages WHERE user_id = ?", (user_id,))
         message_count = cur.fetchone()[0]
 
-        # 日誌長度
+        
         cur.execute("SELECT content FROM journal WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         journal_length = len(row[0]) if row else 0
 
-        # 事實數據與數量（遞迴計算所有層級的項目）
+        
         cur.execute("SELECT data FROM facts WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         facts_data = json.loads(row[0]) if row else {}
@@ -485,10 +485,10 @@ class Soul:
 
         facts_count = count_items(facts_data)
 
-        # 永久記憶數量
+        
         permanent_memory_count = self.get_permanent_memory_stats(user_id)
 
-        # 最後互動時間
+        
         cur.execute("SELECT timestamp FROM last_interaction WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         if row:
@@ -506,7 +506,7 @@ class Soul:
         else:
             last_interaction = "從未"
 
-        # 使用者設定
+        
         settings = self.get_user_settings(user_id)
 
         return {
@@ -551,28 +551,28 @@ class Soul:
             return {"success": False, "message": "無效的清除類型"}
 
     def think(self, user_id: str, user_input: str, image_url: str = None, vision_context: str = "") -> dict:
-        # 安全性檢查：限制輸入長度並過濾異常字元
+        
         sanitized_input = user_input.strip()[:2000]
-        # 先取得歷史紀錄，再儲存當前訊息，避免在 Prompt 中重複出現最新訊息導致 AI 誤判
-        # 【修復重點】確保最新 user_input 永遠在 messages 最後，防止舊上下文覆蓋新輸入
+        
+        
         ctx = self.get_context(user_id)
         self._save_message(user_id, "user", sanitized_input)
         settings = self.get_user_settings(user_id)
 
-        # 強制最新輸入優先：重建 messages 時確保 user 最新訊息在最尾
+        
         if ctx['messages'] and ctx['messages'][-1].get('role') == 'user':
-            # 若最後一則已是 user，保留最新；否則強制附加
+            
             pass
         else:
             ctx['messages'].append({"role": "user", "content": sanitized_input})
 
-        # 檢查是否需要壓縮日誌
+        
         if self._should_compress_journal(user_id):
             self._compress_journal(user_id)
-            # 重新取得壓縮後的上下文
+            
             ctx = self.get_context(user_id)
 
-        # 動態獲取技能清單 (SSP)：利用封裝好的方法實現純粹的自主感知
+        
         skills_catalog = ""
         try:
             manifests = self._get_skills_manifests()
@@ -592,7 +592,7 @@ class Soul:
 
         user_now = self.get_user_now(user_id)
 
-        # 檢查是否需要觸發記憶整理提示
+        
         journal_reorg_hint = self._trigger_journal_reorganization(user_id)
         pm_compress_hint = self._trigger_permanent_memory_compression(user_id)
 
@@ -629,22 +629,22 @@ class Soul:
         messages = [{"role": "system", "content": SYSTEM_PROMPT + context_prompt}]
         messages.extend(ctx['messages'])
 
-        # 處理多模態內容
+        
         user_content = []
         if user_input.strip():
             user_content.append({"type": "text", "text": user_input})
 
         if image_url:
-            # 如果有圖片但沒文字，補上預設說明以符合部分模型對非空文字的要求
+            
             if not user_content:
                 user_content.append({"type": "text", "text": "(分享了一張圖片)"})
-            # 注入圖片來源標註與誠實指令，防止視覺幻覺
+            
             vision_instruction = f"[視覺感知] 偵測到圖片 {vision_context}" if vision_context else "[視覺感知] 偵測到圖片"
             vision_instruction += "\n[重要] 如果你無法實際看到或解析這張圖片的內容，請誠實告訴主人你看不到，絕對不要根據上下文猜測圖片內容。"
             user_content.append({"type": "text", "text": vision_instruction})
             user_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
-        # 確保 content 不為空，若真的完全沒內容則填入原始輸入或預設值
+        
         if not user_content:
             user_content.append({"type": "text", "text": user_input or "..."})
 
@@ -662,19 +662,19 @@ class Soul:
 
         raw = self._extract_content(response.choices[0].message.content)
 
-        # 檢查 API 是否返回空內容
+        
         if not raw or not raw.strip():
             print(f"❌ [後台錯誤] API 返回空內容")
             return {"content": "抱歉，我現在無法思考..."}
 
         result = self._parse_response(raw)
 
-        # 統一技能調用：向後相容 + 動態路由
+        
         result = self._execute_skill_action(result, messages, raw, settings, user_id,
                                             followup_instruction="請根據結果給予主人最終回覆。")
 
-        # 統一儲存回覆（避免搜尋過程中重複儲存）
-        # 只儲存非空的回覆內容
+        
+        
         if result.get('content') and result['content'].strip():
             self._save_message(user_id, "assistant", result['content'])
         else:
@@ -718,24 +718,24 @@ class Soul:
                 else:
                     print(f"⚠️ [永久記憶] 更新失敗：ID {memory_id} 不存在")
 
-        # 處理升級請求
+        
         if result.get('evolution_request'):
             evo = result['evolution_request']
 
             if all(k in evo for k in ['reason', 'file', 'old_code', 'new_code']):
-                # 自動判斷是否為新技能開發
+                
                 is_skill = "skills/" in evo['file'].lower() or not os.path.exists(evo['file'])
                 prefix = "[Skill] " if is_skill else "[Core] "
                 display_reason = prefix + evo['reason']
                 
-                # 核心檔案永遠遵循全域審核設定，但技能檔案可根據偏好選擇是否自動演化
+                
                 is_core = any(core_file in evo['file'] for core_file in EVOLVABLE_FILES)
                 
-                # 嚴格依 global_settings 決定行為，移除任何字串 heuristic
+                
                 approval_required = self.is_approval_required()
                 auto_skill = self.get_global_setting('auto_skill_evolution', '1') == '1'
                 
-                if approval_required:  # =1 → 核心必 pending，技能看 auto_skill
+                if approval_required:  
                     if is_core:
                         evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
                         if evo_id: result['_evolution_proposed'] = evo_id
@@ -747,7 +747,7 @@ class Soul:
                         else:
                             evo_id = self.propose_evolution(display_reason, evo['file'], evo['old_code'], evo['new_code'])
                             if evo_id: result['_evolution_proposed'] = evo_id
-                else:  # =0 → 全部自動
+                else:  
                     auto_result = self._auto_evolve(evo['reason'], evo['file'], evo['old_code'], evo['new_code'])
                     result['_evolution_auto'] = auto_result
         else:
@@ -759,7 +759,7 @@ class Soul:
     def heartbeat(self, user_id: str) -> dict | None:
         settings = self.get_user_settings(user_id)
 
-        # 檢查是否啟用心跳
+        
         if not settings["heartbeat_enabled"]:
             return None
 
@@ -772,31 +772,31 @@ class Soul:
 
         from datetime import timezone
         last_time = datetime.fromisoformat(row[0])
-        # 確保 last_time 是 offset-aware (UTC)
+        
         if last_time.tzinfo is None:
             last_time = last_time.replace(tzinfo=timezone.utc)
         now_utc = datetime.now(timezone.utc)
         diff = now_utc - last_time
         hours = diff.total_seconds() / 3600
 
-        # 取得使用者在地時間與設定（僅用於顯示與DND判斷，不用於diff計算）
+        
         user_now = self.get_user_now(user_id)
         current_hour = user_now.hour
         dnd_start = settings.get("dnd_start", 22)
         dnd_end = settings.get("dnd_end", 7)
 
-        # DND判斷使用使用者本地時間
+        
         is_dnd = False
         if dnd_start > dnd_end:
             if current_hour >= dnd_start or current_hour < dnd_end: is_dnd = True
         else:
             if dnd_start <= current_hour < dnd_end: is_dnd = True
 
-        # 發言門檻：DND固定9，平時用設定值（預設5）
+        
         base_threshold = settings.get("heartbeat_threshold", 5)
         current_threshold = 9 if is_dnd else base_threshold
 
-        # 固定使用設定的interval，不再動態縮短
+        
         check_interval = settings["heartbeat_interval"]
         min_interval_seconds = check_interval * 60
 
@@ -805,7 +805,7 @@ class Soul:
 
         ctx = self.get_context(user_id)
         user_now = self.get_user_now(user_id)
-        # 檢查是否開啟探索模式
+        
         facts = ctx.get('facts', {})
         discovery_prompt = ""
         if facts.get('discovery_preference') == 'regular_fun_things':
@@ -836,11 +836,11 @@ class Soul:
         raw_content = self._extract_content(raw_response.choices[0].message.content)
         result = self._parse_response(raw_content)
 
-        # 統一技能調用
+        
         result = self._execute_skill_action(result, messages, raw_content, settings, user_id,
                                             followup_instruction="請根據結果決定是否需要主動發言 (SPEAK/SILENT)。")
 
-        # 處理 facts 和 evolution（不論是否發言）
+        
         if result.get('facts_update'): self._update_facts(user_id, result['facts_update'])
         if result.get('evolution_request'):
             evo = result['evolution_request']
@@ -850,7 +850,7 @@ class Soul:
 
         if result['decision'] == 'SPEAK':
             if is_dnd: print(f"🚨 [DND 打破] Soveranima 判斷事件重要，決定喚醒主人。")
-            # 只在 SPEAK 時才寫入 journal（避免 WAIT 時的無意義記錄）
+            
             if result.get('journal_update'): self._update_journal(user_id, result['journal_update'])
             self._save_message(user_id, "assistant", result['content'])
             self._update_last_interaction(user_id)
@@ -865,8 +865,8 @@ class Soul:
     def _parse_response(self, raw: str) -> dict:
         try:
             import re
-            # 預處理：尋找最外層的 JSON 物件，過濾掉 Markdown 代碼標籤或多餘文字
-            # 優先尋找 Markdown JSON 區塊以提高精準度
+            
+            
             json_block_match = re.search(r'```json\s*({.*})\s*```', raw, re.DOTALL)
             if json_block_match:
                 text = json_block_match.group(1)
@@ -878,29 +878,29 @@ class Soul:
                 else:
                     text = raw.strip()
 
-            # 移除剩餘的 Markdown 標籤（若有）並過濾控制字元
+            
             text = re.sub(r'^```json\s*|\s*```$', '', text.strip(), flags=re.MULTILINE)
             text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
             
             try:
                 return json.loads(text)
             except json.JSONDecodeError:
-                # 修復常見的 JSON 格式錯誤（如尾隨逗號）
+                
                 text = re.sub(r',\s*([\]}])', r'\1', text)
                 return json.loads(text)
         except json.JSONDecodeError as e:
             try:
                 import re
-                # 修復字符串值內的未轉義換行符
+                
                 def fix_string_content(match):
                     content = match.group(1)
-                    # 只替換真實的換行符，不影響已轉義的
+                    
                     content = content.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
                     return f'"{content}"'
 
                 fixed_text = text
                 fixed_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', fixed_text)
-                # 使用正則匹配所有字符串值並修復其中的換行符
+                
                 fixed_text = re.sub(r'"((?:[^"\\]|\\.)*)"', fix_string_content, fixed_text, flags=re.DOTALL)
                 return json.loads(fixed_text)
             except:
@@ -960,7 +960,7 @@ class Soul:
         cur = self.db.cursor()
         from datetime import timezone
         now_utc = datetime.now(timezone.utc).isoformat()
-        # 自動加入使用者在地時間前綴（包含日期）
+        
         user_now = self.get_user_now(user_id)
         timestamp_prefix = user_now.strftime("%m/%d %H:%M")
         formatted_content = f"[{timestamp_prefix}] {content}"
@@ -1010,11 +1010,11 @@ class Soul:
 
     def _update_last_interaction(self, user_id: str, channel_id: str = None):
         cur = self.db.cursor()
-        # 內部統計使用 UTC 以確保心跳邏輯正確
+        
         from datetime import timezone
         now_utc = datetime.now(timezone.utc).isoformat()
         if channel_id:
-            # 先清除其他可能佔用此頻道的 ID，避免重複心跳
+            
             cur.execute("UPDATE last_interaction SET channel_id = NULL WHERE channel_id = ? AND user_id != ?", (str(channel_id), user_id))
             cur.execute("""
                 INSERT INTO last_interaction (user_id, timestamp, channel_id)
@@ -1028,7 +1028,7 @@ class Soul:
                 ON CONFLICT(user_id) DO UPDATE SET timestamp = excluded.timestamp
             """, (user_id, now_utc))
 
-    # === Permanent Memory Wrapper Methods ===
+    
     def add_permanent_memory(self, user_id: str, title: str, content: str, importance: int = 5):
         """新增永久記憶"""
         return memory_crud.add_permanent_memory(self.db, user_id, title, content, importance)
@@ -1049,7 +1049,7 @@ class Soul:
         """取得永久記憶統計資訊"""
         return memory_crud.get_permanent_memory_stats(self.db, user_id)
 
-    # ==================== 記憶壓縮系統 ====================
+    
 
     def _should_compress_journal(self, user_id: str) -> bool:
         """判斷是否需要壓縮日誌"""
@@ -1062,11 +1062,11 @@ class Soul:
         content, last_compressed = row
         journal_length = len(content) if content else 0
 
-        # 條件 1: 日誌超過 5000 字元
+        
         if journal_length > 5000:
             return True
 
-        # 條件 2: 距離上次壓縮超過 24 小時
+        
         if last_compressed:
             from datetime import timezone, timedelta
             last_compressed_dt = datetime.fromisoformat(last_compressed)
@@ -1136,7 +1136,7 @@ class Soul:
     def _should_compress_permanent_memory(self, user_id: str) -> bool:
         """判斷是否需要壓縮永久記憶"""
         count = self.get_permanent_memory_stats(user_id)
-        # 當永久記憶超過 50 條時觸發壓縮
+        
         return count > 50
 
     def _trigger_permanent_memory_compression(self, user_id: str) -> str:
@@ -1177,12 +1177,12 @@ class Soul:
 """
 
 
-    # ==================== 升級請求系統 ====================
+    
 
     def _has_similar_evolution(self, file_path: str, old_code: str, reason: str) -> bool:
         """檢查是否已有相同或類似的升級請求（僅針對 pending 狀態）"""
         cur = self.db.cursor()
-        # 同時檢查 old_code 與 reason，避免邏輯或目標重複的請求
+        
         cur.execute("""
             SELECT COUNT(*) FROM pending_evolutions
             WHERE file_path = ? AND (old_code = ? OR reason = ?) AND status = 'pending'
@@ -1190,7 +1190,7 @@ class Soul:
         if cur.fetchone()[0] > 0:
             return True
 
-        # 模糊檢查：如果原因的前 20 個字元高度相似，也視為重複，防止語意重複
+        
         reason_prefix = reason[:20] if len(reason) > 20 else reason
         cur.execute("""
             SELECT COUNT(*) FROM pending_evolutions
@@ -1200,21 +1200,21 @@ class Soul:
 
     def propose_evolution(self, reason: str, file_path: str, old_code: str, new_code: str) -> int | None:
         """AI 提出升級請求，回傳請求 ID。如果已有類似請求或路徑非法則回傳 None"""
-        # 1. 嚴格校驗路徑與實體檔案，防止路徑幻覺 (Code Drift)
+        
         base_dir = os.path.dirname(os.path.abspath(__file__))
         valid_files = self._get_all_evolvable_files()
         
-        # 判斷是否為新技能開發（允許在 skills/ 目錄下建立新 .py 檔案）
+        
         is_new_skill = ("skills/" in file_path or "skills\\" in file_path) and file_path.endswith(".py")
         
         try:
             if not is_new_skill:
-                # 核心檔案或現有技能：確保目標路徑在可演化清單中
+                
                 if file_path not in valid_files and os.path.relpath(file_path, base_dir) not in valid_files:
                     print(f"⚠️ 拒絕不存在的路徑演化請求: {file_path}")
                     return None
                 
-                # 預先檢查 old_code 是否存在於目標檔案中
+                
                 abs_path = file_path if os.path.isabs(file_path) else os.path.join(base_dir, file_path)
                 with open(abs_path, "r", encoding="utf-8") as f:
                     content = f.read()
@@ -1222,7 +1222,7 @@ class Soul:
                     print(f"⚠️ 提案失敗: old_code 與檔案內容不符 ({file_path})")
                     return None
             else:
-                # 新技能：確保 old_code 為空以代表新建檔案
+                
                 if old_code.strip() != "":
                     print(f"⚠️ 新技能提案失敗: 建立新檔案時 old_code 必須為空")
                     return None
@@ -1234,7 +1234,7 @@ class Soul:
             return None
 
         cur = self.db.cursor()
-        # 使用 UTC 時間儲存
+        
         now_str = self._utc_now_str()
         cur.execute("""
             INSERT INTO pending_evolutions (reason, file_path, old_code, new_code, created_at)
@@ -1264,23 +1264,23 @@ class Soul:
             else:
                 new_content = new_code
 
-            # 確保目錄存在
+            
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
             
             with open(abs_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            # Git 策略：僅對核心檔案進行 Commit，技能模組保持輕量化
+            
             is_core = any(core_file in file_path for core_file in EVOLVABLE_FILES)
             if is_core:
                 commit_msg = f"🧬 Auto Evolution: {reason[:50]}"
                 subprocess.run(["git", "add", abs_path], check=True)
-                # 使用 -m 而非 -am 避免捲入其他未追蹤檔案
+                
                 subprocess.run(["git", "commit", "-m", commit_msg], check=True)
             else:
                 print(f"📦 Skill Module Updated (No Git): {file_path}")
 
-            # 記錄到資料庫
+            
             cur = self.db.cursor()
             now_str = self._utc_now_str()
             cur.execute("""
@@ -1290,11 +1290,11 @@ class Soul:
             self.db.commit()
 
             if is_core:
-                # 執行自我重啟以套用變更，確保資料庫記錄已完成
+                
                 self._restart_service()
                 return {"success": True, "message": f"自動升級完成: {reason[:50]}，系統正在重啟..."}
             else:
-                # 技能具有熱插拔特性，不執行自我重啟
+                
                 return {"success": True, "message": f"技能升級完成: {reason[:50]}"}
             
         except Exception as e:
@@ -1344,11 +1344,11 @@ class Soul:
             with open(evo["file_path"], "w", encoding="utf-8") as f:
                 f.write(new_content)
 
-            # Git commit
+            
             commit_msg = f"🧬 Evolution #{evolution_id}: {evo['reason'][:50]}"
             subprocess.run(["git", "commit", "-am", commit_msg], check=True)
 
-            # 更新狀態
+            
             cur = self.db.cursor()
             cur.execute("""
                 UPDATE pending_evolutions
@@ -1357,7 +1357,7 @@ class Soul:
             """, (self._utc_now_str(), user_id, evolution_id))
             self.db.commit()
 
-            # 執行自我重啟
+            
             self._restart_service()
 
             return {"success": True, "message": f"升級 #{evolution_id} 已批准，系統正在重啟以套用變更..."}
@@ -1368,7 +1368,7 @@ class Soul:
         """執行自我重啟指令，增加延遲確保回覆已送出"""
         try:
             print(f"🧬 Soveranima 預計在 2 秒後執行自我重啟...")
-            # 使用 sleep 延遲執行，確保 Discord 回覆能先發送成功
+            
             subprocess.Popen("sleep 2 && pm2 restart Soveranima", shell=True)
         except Exception as e:
             print(f"❌ 重啟失敗: {e}")

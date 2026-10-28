@@ -57,7 +57,7 @@ class SoulBot(discord.Client):
         self.active_channels = {}
 
     async def setup_hook(self):
-        # 同步 Slash Commands 到 Discord
+        
         await self.tree.sync()
         print("✅ Slash Commands 已同步")
 
@@ -65,7 +65,7 @@ class SoulBot(discord.Client):
 client = SoulBot()
 
 
-# ==================== 設定選單 UI ====================
+
 
 class ConfigView(ui.View):
     """設定選單主視圖"""
@@ -249,7 +249,7 @@ class ForgetView(ui.View):
             await interaction.response.send_message(f"❌ {result['message']}", ephemeral=True)
 
 
-# ==================== 輔助函數 ====================
+
 
 async def send_long_message(channel, content: str, max_length: int = 2000):
     """分段發送超過 Discord 限制的訊息，並確保 Markdown 代碼塊不崩潰"""
@@ -263,14 +263,14 @@ async def send_long_message(channel, content: str, max_length: int = 2000):
             chunks.append(content)
             break
 
-        # 尋找分割點，優先找換行
+        
         split_pos = content.rfind('\n', 0, max_length - 50)
         if split_pos == -1 or split_pos < max_length // 2:
             split_pos = max_length - 50
 
         chunk = content[:split_pos]
         
-        # 處理代碼塊閉合邏輯 (SSP 強化版)
+        
         if chunk.count("```") % 2 != 0:
             chunk += "\n```"
             content = "```python\n" + content[split_pos:].lstrip()
@@ -290,7 +290,7 @@ async def send_long_response(interaction: discord.Interaction, content: str, max
         await interaction.response.send_message(content)
         return
 
-    # 先發送第一段
+    
     chunks = []
     temp_content = content
     while temp_content:
@@ -313,7 +313,7 @@ async def send_long_response(interaction: discord.Interaction, content: str, max
             await interaction.followup.send(chunk)
 
 
-# ==================== Slash Commands ====================
+
 
 @client.tree.command(name="help", description="顯示可用指令說明")
 async def cmd_help(interaction: discord.Interaction):
@@ -401,7 +401,7 @@ async def cmd_detail(interaction: discord.Interaction, id: int):
         await interaction.response.send_message("❌ 找不到該升級請求", ephemeral=True)
         return
 
-    # 處理程式碼中的三引號，避免破壞 Discord 的 Markdown 格式
+    
     display_old = evo['old_code'][:500].replace("```", "''`")
     display_new = evo['new_code'][:500].replace("```", "''`")
     text = (
@@ -444,22 +444,22 @@ async def cmd_reject(interaction: discord.Interaction, id: int):
     await interaction.response.send_message(f"{emoji} {result['message']}")
 
 
-# ==================== Discord 事件 ====================
+
 
 @client.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """全局 Slash Command 錯誤處理"""
     import aiohttp
 
-    # 取得原始錯誤
+    
     original = error.__cause__ if isinstance(error, app_commands.CommandInvokeError) else error
 
-    # 網路相關的暫時性錯誤 - 靜默處理，只記錄日誌
+    
     if isinstance(original, (aiohttp.ClientError, asyncio.TimeoutError)):
         print(f"⚠️ 網路錯誤 (/{interaction.command.name if interaction.command else 'unknown'}): {type(original).__name__}")
         return
 
-    # 其他錯誤 - 嘗試通知使用者
+    
     error_msg = "❌ 指令執行時發生錯誤，請稍後再試"
     try:
         if interaction.response.is_done():
@@ -467,9 +467,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         else:
             await interaction.response.send_message(error_msg, ephemeral=True)
     except Exception:
-        pass  # 如果連回應都失敗，就放棄
+        pass  
 
-    # 記錄錯誤以便除錯
+    
     print(f"❌ 指令錯誤 (/{interaction.command.name if interaction.command else 'unknown'}): {original}")
 
 
@@ -481,7 +481,7 @@ async def on_ready():
     else:
         print("⚠️ 未設定 OWNER_ID，部分功能可能受限")
     
-    # 恢復 active_channels (確保唯一性，優先保留最新紀錄)
+    
     try:
         cur = client.soul.db.cursor()
         cur.execute("SELECT user_id, channel_id FROM last_interaction WHERE channel_id IS NOT NULL ORDER BY timestamp DESC")
@@ -508,16 +508,16 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    # 確保只在私訊 (DM) 中回應
+    
     if message.guild is not None:
         return
 
     user_id = str(message.author.id)
     client.active_channels[user_id] = message.channel
-    # 持久化頻道 ID 以利重啟後恢復
+    
     client.soul._update_last_interaction(user_id, message.channel.id)
 
-    # 忽略 slash command（以 / 開頭的訊息由 Discord 處理）
+    
     if message.content.startswith("/"):
         return
 
@@ -526,7 +526,7 @@ async def on_message(message):
             await asyncio.sleep(0.8)
             print(f"🧠 靈魂正在為 {user_id} 思考中...")
             
-            # 視覺感知邏輯：掃描當前訊息、回覆訊息及近期歷史，附帶來源標註防止幻覺
+            
             image_url = None
             vision_context = ""
 
@@ -534,13 +534,13 @@ async def on_message(message):
                 """從 Discord 訊息中提取圖片 URL（支援附件、Embed 圖片/縮圖、Sticker）"""
                 if not msg: return None
                 img_exts = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff')
-                # 1. 檢查附件（優先使用 proxy_url，避免 CDN token 過期導致 LLM 無法存取）
+                
                 if msg.attachments:
                     for a in msg.attachments:
                         is_image = a.filename.lower().endswith(img_exts) or (a.content_type and a.content_type.startswith('image/'))
                         if is_image:
                             return a.proxy_url or a.url
-                # 2. 檢查 Embed 的 image 和 thumbnail
+                
                 if msg.embeds:
                     for e in msg.embeds:
                         if e.image and e.image.proxy_url:
@@ -551,18 +551,18 @@ async def on_message(message):
                             return e.thumbnail.proxy_url
                         if e.thumbnail and e.thumbnail.url:
                             return e.thumbnail.url
-                # 3. 檢查 Sticker
+                
                 if msg.stickers:
                     for s in msg.stickers:
                         return s.url
                 return None
 
-            # 1. 優先檢查當前訊息
+            
             image_url = extract_img(message)
             if image_url:
                 vision_context = "[來源: 當前訊息附件]"
 
-            # 2. 檢查回覆目標
+            
             is_reply_image = False
             if not image_url and message.reference and message.reference.message_id:
                 try:
@@ -574,7 +574,7 @@ async def on_message(message):
                 except Exception:
                     pass
 
-            # 3. 檢查最近歷史 (僅在非回覆且當前無圖時進行，並縮短時間鎖至 30s，且僅在訊息極短或包含關鍵字時觸發)
+            
             if not image_url and not is_reply_image:
                 keywords = ['這', '那', '圖', '看', '什麼', '誰', '哪']
                 is_short = len(message.content) < 10
@@ -594,7 +594,7 @@ async def on_message(message):
                         pass
 
             if image_url:
-                # 下載圖片轉 base64，避免 Discord CDN URL 過期導致 LLM 無法存取
+                
                 try:
                     import aiohttp, ssl
                     _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -613,7 +613,7 @@ async def on_message(message):
             else:
                 print(f"👁️ [視覺] 未偵測到圖片")
             
-            # 處理回覆 (Reply) 文本上下文
+            
             processed_content = message.content
             if message.reference and message.reference.message_id:
                 try:
@@ -627,14 +627,14 @@ async def on_message(message):
             result = await loop.run_in_executor(None, client.soul.think, user_id, processed_content, image_url, vision_context)
             await asyncio.sleep(1.0)
 
-        # 如果有待執行的技能，先發送中間訊息（「讓我查一下」等），再繼續思考
+        
         if result.get('_pending_skill'):
             if result.get("content"):
                 await send_long_message(message.channel, result["content"])
             if result.get("inner_thought"):
                 print(f"💭 內心獨白: {result['inner_thought']}")
 
-            # 繼續執行技能 + 後續思考（帶 typing 指示器）
+            
             async with message.channel.typing():
                 result = await loop.run_in_executor(None, client.soul.continue_skill, result)
 
@@ -658,7 +658,7 @@ async def heartbeat_loop():
     
     for user_id, channel in list(client.active_channels.items()):
         try:
-            # 清理超過 7 天未互動的非活動頻道 (直接從 DB 讀取 UTC 時間進行比較)
+            
             cur = client.soul.db.cursor()
             cur.execute("SELECT timestamp FROM last_interaction WHERE user_id = ?", (user_id,))
             row = cur.fetchone()
